@@ -1,0 +1,10 @@
+allowBuilds:
+  electron: true
+  esbuild: true
+  fs-xattr: true
+  macos-alias: true
+minimumReleaseAgeExclude:
+  - electron@44.5.1
+overrides:
+  "@electron/node-gyp": "10.2.0-electron.2"
+nodeLinker: hoisted

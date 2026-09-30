@@ -1,0 +1,3 @@
+allowBuilds:
+  dugite: true
+  esbuild: true

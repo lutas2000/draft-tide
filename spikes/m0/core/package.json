@@ -1,0 +1,35 @@
+{
+  "name": "@draft-tide/m0-core-spike",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "M0 feasibility spike: storage strategy, Engine bootstrap, CLI/MCP entry points. Throwaway code, not product.",
+  "engines": {
+    "node": ">=24.11 <25"
+  },
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "storage": "node src/storage/run.ts",
+    "engine:verify": "node src/engine/verify.ts",
+    "build:companion": "node scripts/build-companion.ts",
+    "agent:smoke": "node src/agent/claude-code-smoke.ts",
+    "cli": "node src/cli.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "better-sqlite3": "^13.0.3",
+    "commander": "^15.0.0",
+    "dugite": "^3.2.3",
+    "yauzl": "^3.4.0",
+    "yazl": "^3.3.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^24.19.0",
+    "@types/yauzl": "^3.4.0",
+    "@types/yazl": "^3.3.1",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}

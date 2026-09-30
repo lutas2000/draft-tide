@@ -4,7 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Draft Tide ("Version history for your designs") is a local-first design version control tool for designers. It is **pre-implementation**: the repo holds only README, LICENSE (Apache-2.0) and `.gitignore`. There is no `package.json`, no build, and no tests yet. Don't invent commands. Once the pnpm workspace exists, read the real scripts from `package.json`.
+Draft Tide ("Version history for your designs") is a local-first design version control tool for designers. It is **pre-implementation**. M0 feasibility work has been done, but M1 has not started: there is no root `package.json` or pnpm workspace and no product code under `apps/` or `packages/`. Don't invent commands. Once the workspace exists, read the real scripts from `package.json`.
+
+- `spikes/m0/` holds **throwaway** M0 spike code: `core/`, `gui/` and `desktop/`, each a standalone pnpm package run through `corepack pnpm`. Commands are in `spikes/m0/README.md`. Don't grow it into M1, and don't import from it; copy ideas deliberately.
+- `docs/m0-report.md` records the M0 results, open items and the findings M1 must absorb. Details are in `docs/benchmark.md`, `docs/compatibility.md`, `docs/safety-model.md`, `docs/agent-e2e.md` and `docs/manual-e2e.md`.
 
 The specs live in `.ref/`, which is **gitignored and local-only**. They are written in Traditional Chinese:
 - `.ref/ROADMAP.md`: milestones M0–M5 and their exit gates
