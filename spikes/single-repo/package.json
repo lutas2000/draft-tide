@@ -1,0 +1,15 @@
+{
+  "name": "@draft-tide/single-repo-spike",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Feasibility spike: Draft Tide history lives in the project's own Git repo (no separate repo), remote-backed. Throwaway code, not product.",
+  "engines": {
+    "node": ">=24.11 <25"
+  },
+  "scripts": {
+    "typecheck": "../m0/core/node_modules/.bin/tsc -p .",
+    "verify": "node src/verify.ts",
+    "github:check": "node src/github-check.ts"
+  }
+}

@@ -2,6 +2,8 @@
 
 M0 draft of the interface and authorization design (ROADMAP §5). Parts marked **verified** were exercised by `spikes/m0/core/src/engine/verify.ts` (dev and packaged, 16/16). Parts marked **open** are M1-00 work. The product contracts live in `.ref/`; this document does not change them.
 
+> **Partly superseded (2026-10-01).** The single-repo design ([single-repo-spike.md](single-repo-spike.md)) replaces the per-project bare repo with the project's own Git repo. Still valid as written: processes and channels, single writer, the channel and operation table, approvals, preview isolation and the known limits. Superseded: the "per-project bare Git" in the diagram; the **User repository** bullet under Git and filesystem hygiene (the Engine now manages the project's `.git` within the limits in `CLAUDE.md`, and that design was checked with a hostile-repo suite instead of a before/after digest); the `-c` flag list and `--template=` bullet (extended, and network operations now run in an ephemeral git dir); and the backup manifest in the metadata-privacy bullet (there is no backup container). New operations on the desktop channel only: GitHub sign-in, connecting a remote, the first push and pull (which writes working files). The tool channel gets no operation that returns a token.
+
 ## Processes and channels
 
 ```text
@@ -53,7 +55,7 @@ An operation that does not exist on a channel returns `UNKNOWN_OPERATION`. The E
 ## Git and filesystem hygiene (verified)
 
 - **Process isolation.** Git runs via `spawn` with argument arrays and an environment built from scratch: no inherited `GIT_*`, `HOME` set to an empty directory, `GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_ALLOW_PROTOCOL=file`. The `-c` flags disable hooks, the attributes file, fsmonitor, autocrlf, auto GC and maintenance, and signing. The repo is created with `--template=`, so it has no sample hooks. `hash-object --no-filters`.
-- **User repository.** The designer's `.git` is never read or written. The test compares a byte-level digest of the whole directory before and after, with hostile hooks and filters present and a hostile parent environment.
+- **User repository (M0 design, superseded).** The designer's `.git` is never read or written. The test compares a byte-level digest of the whole directory before and after, with hostile hooks and filters present and a hostile parent environment.
 - **Capture.** Symlinks and special entries stop the capture (`UNSUPPORTED_ENTRY`). Files are opened with `O_NOFOLLOW` and their inode is re-checked. Case and normalization collisions are rejected.
 - **Write-back.** Restore writes a temp file in the target folder, fsyncs and closes it, re-checks the expected old OID, then renames. A symlinked or non-directory parent is refused.
 - **Metadata privacy.** Commit metadata and the backup manifest contain no absolute paths, home directory or user name. This is checked by scanning every commit and the manifest.

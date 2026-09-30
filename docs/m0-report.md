@@ -2,6 +2,8 @@
 
 Date: 2026-09-30 · Machine: macOS 27.0.1, Apple Silicon (arm64) · Spike code: [`spikes/m0/`](../spikes/m0/README.md)
 
+> **Follow-up (2026-10-01).** After this report the storage design was revisited: history now lives in the project's own Git repo and syncs to GitHub, with no separate bare repo and no backup/import ([single-repo-spike.md](single-repo-spike.md)). For M1, §1 (per-project bare Git), the backup and import results, and "the user's own repo is untouchable" are superseded. The raw-bytes strategy, the Engine, transport, approvals, Preview Host and packaging results stand.
+
 M0 is the pre-implementation phase from ROADMAP §5 and the TECH_STACK §14 row "M0 / M1-00". This report records what was run, what passed and what is still open. The spike code is throwaway: it proves feasibility and is not the M1 implementation, and nothing here counts as data-safety acceptance for M1.
 
 ## Exit gate status

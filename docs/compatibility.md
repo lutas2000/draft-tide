@@ -18,10 +18,10 @@ This file records what was actually tested, not what is supported. Everything be
 | Electron | 44.5.1 (Chromium 152.0.7977.130, internal Node 24.21.0) | GUI shell, Preview Host | Electron's Node is never used for the Engine |
 | Companion Node | 24.18.1 (official build, 115.5 MiB) | Engine, CLI, MCP | `Contents/Resources/node/bin/node`; the launcher never consults `PATH` |
 | better-sqlite3 | 13.0.3, SQLite 3.53.4 | Engine only | Ships N-API prebuilds for darwin/linux/linuxmusl/win32 × x64/arm64, so nothing is compiled. The app copies one prebuild. Forge has no native modules to rebuild |
-| Git | 2.53.0 (dugite-native v2.53.0-4) | Engine only | Trimmed to `bin/git` + `libexec/git-core/git -> ../../bin/git` (3.2 MiB; the full tarball is 148 MiB, mostly Git Credential Manager/.NET and git-lfs). Links only to system libz, libiconv, CoreServices and CoreFoundation. Passes all 31 storage checks, including bundle, fetch-from-bundle, fsck and repack |
+| Git | 2.53.0 (dugite-native v2.53.0-4) | Engine only | Trimmed to `bin/git` + `libexec/git-core/git -> ../../bin/git` (3.2 MiB; the full tarball is 148 MiB, mostly Git Credential Manager/.NET and git-lfs). Links only to system libz, libiconv, CoreServices and CoreFoundation. Passes all 31 storage checks, including bundle, fetch-from-bundle, fsck and repack. **Not usable for M1:** the trimmed build has no `git-remote-http(s)`, so it cannot reach a remote (`'remote-http' is not a git command`). M1 needs the full build with https and verified TLS; see [single-repo-spike.md](single-repo-spike.md) |
 | MCP SDK | @modelcontextprotocol/sdk 1.31.0 (zod 4.6.5) | MCP stdio server | `McpServer.registerTool`, `StdioServerTransport` |
 | CLI | commander 15.0.0 | CLI | |
-| Backup container | yazl 3.3.1 / yauzl 3.4.0 | Engine | |
+| Backup container | yazl 3.3.1 / yauzl 3.4.0 | Engine | M0 only. The single-repo design has no backup container, so these dependencies are dropped for M1 |
 | GUI | React 19.3.0, Vite 8.3.1, Tailwind 4.3.3 | GUI renderer | |
 | Build | TypeScript 7.0.2 (native), esbuild 0.28.2, pnpm 12.8.1 via corepack | | |
 | Packaging | @electron-forge/cli 7.11.2, maker-dmg, maker-zip, plugin-fuses, @electron/fuses 2.1.3 | | Forge 8.0.1 was published 2026-09-29, and pnpm's minimum-release-age excluded it |
