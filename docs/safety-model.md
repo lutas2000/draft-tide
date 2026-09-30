@@ -4,6 +4,15 @@ M0 draft of the interface and authorization design (ROADMAP §5). Parts marked *
 
 > **Partly superseded (2026-10-01).** The single-repo design ([single-repo-spike.md](single-repo-spike.md)) replaces the per-project bare repo with the project's own Git repo. Still valid as written: processes and channels, single writer, the channel and operation table, approvals, preview isolation and the known limits. Superseded: the "per-project bare Git" in the diagram; the **User repository** bullet under Git and filesystem hygiene (the Engine now manages the project's `.git` within the limits in `CLAUDE.md`, and that design was checked with a hostile-repo suite instead of a before/after digest); the `-c` flag list and `--template=` bullet (extended, and network operations now run in an ephemeral git dir); and the backup manifest in the metadata-privacy bullet (there is no backup container). New operations on the desktop channel only: GitHub sign-in, connecting a remote, the first push and pull (which writes working files). The tool channel gets no operation that returns a token.
 
+> **Approvals superseded (2026-10-01).** The approval-receipt model below is replaced: the "Approvals (verified)" section, and the `operation.requestApproval`, `restore.apply` and `approval.list / approval.decide` rows. Turning on agent access in the GUI now counts as consent; it is one global switch that covers both CLI and MCP.
+>
+> - **Tool channel, with access on.** It runs local, recoverable operations directly as plan → apply, with the fingerprint check: restore, pull, recovery, and open-from-remote into an empty folder.
+> - **Desktop-only.** Binding a folder, GitHub sign-in, connecting a remote and the first push stay on the desktop channel. The tool channel can only request them.
+> - **Tool channel, with access off.** It gets `AGENT_ACCESS_DISABLED`.
+> - **Open for M1-00.** Item 2 (caller identity per host) is moot. Item 1 (desktop enrollment) still matters, because the desktop channel now holds the agent-access switch and the remote operations.
+>
+> See `.ref/M1_IMPLEMENTATION_PLAN.md` §9.1.
+
 ## Processes and channels
 
 ```text

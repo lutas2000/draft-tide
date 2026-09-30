@@ -3,6 +3,8 @@
 Date: 2026-09-30 · Machine: macOS 27.0.1, Apple Silicon (arm64) · Spike code: [`spikes/m0/`](../spikes/m0/README.md)
 
 > **Follow-up (2026-10-01).** After this report the storage design was revisited: history now lives in the project's own Git repo and syncs to GitHub, with no separate bare repo and no backup/import ([single-repo-spike.md](single-repo-spike.md)). For M1, §1 (per-project bare Git), the backup and import results, and "the user's own repo is untouchable" are superseded. The raw-bytes strategy, the Engine, transport, approvals, Preview Host and packaging results stand.
+>
+> **Gate update (2026-10-01).** The project owner confirmed the manual-flow gate and deferred install-path verification. The agent-entry smoke passed 7/7 against a logged-in standalone Claude Code. The owner also removed per-operation approvals: turning on agent access in the GUI is consent, and agents restore directly (see the note in [safety-model.md](safety-model.md)). The M0 approval results below describe the superseded model.
 
 M0 is the pre-implementation phase from ROADMAP §5 and the TECH_STACK §14 row "M0 / M1-00". This report records what was run, what passed and what is still open. The spike code is throwaway: it proves feasibility and is not the M1 implementation, and nothing here counts as data-safety acceptance for M1.
 
@@ -11,9 +13,9 @@ M0 is the pre-implementation phase from ROADMAP §5 and the TECH_STACK §14 row 
 | M0 exit gate (ROADMAP §4) | Status | Evidence |
 |---|---|---|
 | Raw bytes, asset reuse and backup can be verified | **Pass** | Storage validation 31/31 in both capture modes and with the trimmed bundled Git ([benchmark.md](benchmark.md)) |
-| The manual flow is understandable | **Open** | Clickable GUI prototype and facilitator script are ready ([manual-e2e.md](manual-e2e.md)); no session with a Git-inexperienced designer has been run yet |
-| Install path can be verified | **Partial** | Unsigned `.app` / `.dmg` build, launched with an empty environment and from the read-only DMG; engine checks 16/16 against the packaged companion ([compatibility.md](compatibility.md)). Clean-machine, signing and notarization not done |
-| Public agent entry has a verifiable path | **Partial** | MCP (official SDK client, stdio) and CLI JSON verified against the packaged build. The real-host smoke with Claude Code 2.1.284 is scripted but blocked: the headless host is not logged in ([agent-e2e.md](agent-e2e.md)) |
+| The manual flow is understandable | **Pass** | Confirmed by the project owner on 2026-10-01; the prototype and facilitator script are in [manual-e2e.md](manual-e2e.md), which has no per-session records |
+| Install path can be verified | **Deferred** | Unsigned `.app` / `.dmg` build, launched with an empty environment and from the read-only DMG; engine checks 16/16 against the packaged companion ([compatibility.md](compatibility.md)). The owner deferred clean-machine, signing and notarization on 2026-10-01; they remain M1 release gates (M1-09) |
+| Public agent entry has a verifiable path | **Pass** | Claude Code 2.1.285 (headless) drove the packaged build over MCP stdio with the project Skill, and over CLI JSON: 7/7 checks ([agent-e2e.md](agent-e2e.md)). MCP and CLI were also verified with the official SDK client |
 
 ## What each M0 track did
 
@@ -69,10 +71,9 @@ Error codes the spike needed that M1 §11.1 lacks:
 
 ## Open items carried into M1-00
 
-- Run at least 3 manual sessions with designers who have no Git experience, using the prototype and [manual-e2e.md](manual-e2e.md).
-- Real agent host smoke: `claude` logged in for headless use, then `node spikes/m0/core/src/agent/claude-code-smoke.ts`, or pick another public host.
-- Desktop enrollment and peer verification (see [safety-model.md](safety-model.md#open-for-m1-00)); approval caller identity per host enrollment rather than per client kind.
-- Developer ID signing, hardened runtime entitlements for the bundled Node (JIT), notarization, clean-machine install and uninstall.
+- Done 2026-10-01: manual-flow gate (owner-confirmed) and the real agent host smoke (7/7).
+- Desktop enrollment and peer verification (see [safety-model.md](safety-model.md#open-for-m1-00)). With approvals removed, per-host caller identity is no longer needed. Enrollment still matters because the desktop channel holds the agent-access switch, folder binding and the remote operations.
+- Deferred by the owner, still required before release (M1-09): Developer ID signing, hardened runtime entitlements for the bundled Node (JIT), notarization, clean-machine install and uninstall.
 - Git GPL-2.0 notices and source offer, plus Node and Electron third-party notices in the artifact manifest.
 - Windows: named pipe, SQLite `LockFileEx` lock and Squirrel packaging are untested.
 - Engine memory needs its own benchmark: the harness process RSS of 420–460 MiB includes harness data; the Engine itself used 94–101 MiB.

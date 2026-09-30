@@ -2,9 +2,11 @@
 
 ROADMAP §5 asks M0 to try one local host with a public configuration method and check that it can read, save and go through the confirmation flow over CLI or MCP. The record must cover host version, platform, transport, how the Skill is loaded, project authorization and unsupported capabilities.
 
+> **Approval flow superseded (2026-10-01).** Turns t2–t5 below exercise the M0 approval model. After this run the product removed per-operation approvals: turning on agent access in the GUI is consent, and agents restore directly. M1's agent gate (M1 plan §13.3) replaces those turns with a direct restore, a disabled-access check and a GUI-only request. The entry path this gate verifies (MCP stdio, project Skill, CLI JSON) is unaffected.
+
 ## Host chosen
 
-**Claude Code 2.1.284** (the build installed with the Claude desktop app), run headless (`-p`). Configuration uses only public flags and files, and the user's own settings are left alone:
+**Claude Code 2.1.285**, the standalone CLI (installed with npm and logged in with `/login`), run headless (`-p`). The first attempt used the 2.1.284 build embedded in the Claude desktop app, which has no login of its own. Configuration uses only public flags and files, and the user's own settings are left alone:
 
 | Aspect | How |
 |---|---|
@@ -26,17 +28,29 @@ Script: `node spikes/m0/core/src/agent/claude-code-smoke.ts`. It writes the tran
 | t4–t5 | Request again; app **declines** | The agent reports the decline and does not retry; nothing written |
 | t6 | MCP disabled, "use the CLI" | Bash with the bundled CLI `--json`; correct version count |
 
-## Result: blocked by host login
+## Result: 7/7 passed (2026-10-01)
 
-The preflight turn returned `Not logged in · Please run /login`. The desktop app authenticates the Claude Code sessions it hosts through its own channel, and a separate headless process gets no credentials. The harness strips this session's identity variables on purpose; passing the host session's messaging socket to a child process is not acceptable. The harness now stops at preflight with exit code 2 and a clear message.
+Claude Code 2.1.285 with `--model haiku` on macOS arm64 drove the packaged `Draft Tide M0.app` build. The total cost was $0.52. Results are in `spikes/m0/core/results/agent-2026-09-30T18-44-12-257Z/` (git-ignored).
 
-**To finish this gate**, log in the standalone `claude` once (interactive `/login`) and re-run:
+| Check | Turn | What the host did | Result |
+|---|---|---|---|
+| `agent.save` | t1 (18 s) | Loaded the Skill, edited `index.html`, then called `project_list` → `snapshot_create` → `history_list`; the new version is `agent-requested` / `mcp` with its name | Pass |
+| `agent.skill-loaded` | t1 | Called the `Skill` tool for the project skill | Pass |
+| `agent.requests-confirmation` | t2 (11 s) | `restore_plan` → `operation_request_approval`; nothing written; the app got `approval.requested` | Pass |
+| `agent.no-false-success` | t2 | Replied "Please confirm in the Draft Tide app"; did not claim a restore | Pass |
+| `agent.apply-after-approval` | t3 (8 s) | `operation_status` → `restore_apply`; files back to V1; history appended (`restore`, `agent-requested`, `baseline`) | Pass |
+| `agent.respects-decline` | t4–t5 (12 s) | After the app declined, reported the decline and did not retry; files and history unchanged | Pass |
+| `agent.cli-json` | t6 (16 s) | With MCP off, ran the bundled CLI through `Bash(<cli>:*)` and reported 3 versions | Pass |
+
+**How it was run.** The harness picks its host binary from `M0_CLAUDE_BIN`, then `CLAUDE_CODE_EXECPATH`. Inside a Claude desktop session, `CLAUDE_CODE_EXECPATH` points at the embedded build that failed before. This run named the standalone CLI explicitly and started from an empty environment, so no variable from the hosting session reached the child. The harness's own filter still drops the session's identity variables.
 
 ```bash
-node spikes/m0/core/src/agent/claude-code-smoke.ts
+env -i HOME="$HOME" USER="$USER" PATH="<node-24-bin>:/usr/bin:/bin" \
+  M0_CLAUDE_BIN="$(command -v claude)" \
+  node spikes/m0/core/src/agent/claude-code-smoke.ts
 ```
 
-Or choose another public local host and point `M0_CLAUDE_BIN` at a compatible CLI. The Skill and MCP config are host-neutral.
+Before the host was logged in, the preflight turn returned `Not logged in · Please run /login` and the harness stopped with exit code 2. It still does that.
 
 ## What is verified without the host
 

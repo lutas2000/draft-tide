@@ -1,6 +1,6 @@
 # Manual flow test (M0 prototype)
 
-The ROADMAP §5 M0 gate says: "先用範例資料驗證選專案、保存範圍、版本卡片、比較與回復確認". **Status: prototype ready, no designer sessions yet.** The gate passes only after real sessions with designers who have no Git experience (ROADMAP §11).
+The ROADMAP §5 M0 gate says: "先用範例資料驗證選專案、保存範圍、版本卡片、比較與回復確認". **Status: passed, confirmed by the project owner on 2026-10-01.** No per-session records were added to the table below. Task 8 (backup and import) no longer applies: the single-repo design removed backup/import in favor of opening a project from its remote.
 
 ## The prototype
 
