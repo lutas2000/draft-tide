@@ -157,6 +157,12 @@ export class World {
       },
       projectSpace: () =>
         Promise.resolve({ volume: this.sameVolume ? 'v' : 'project', availableBytes: this.projectFree }),
+      writeProjectConfig: (bytes, expected) => {
+        const f = this.files.get(PROJECT_CONFIG_FILE);
+        if ((f ? oidOf(f.bytes) : null) !== expected) return Promise.reject(new Error('changed'));
+        this.write(PROJECT_CONFIG_FILE, Buffer.from(bytes));
+        return Promise.resolve();
+      },
     };
   }
 

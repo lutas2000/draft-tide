@@ -23,11 +23,15 @@ const INSTRUCTIONS = `Draft Tide keeps version history for a designer's local de
 Every tool returns one JSON envelope: {schemaVersion, ok, data, warnings, error: {code, message, details, retryable}}.
 Call engine_info first. If agentAccess.enabled is false, every other tool returns AGENT_ACCESS_DISABLED:
 ask the user to turn on agent access in the Draft Tide app (Settings). You cannot turn it on yourself.
-Use project_list to find the project the user means; never guess a folder.
+Use project_list to find the project the user means; never guess a folder. New folders are connected by the
+user in the app. project_status shows unsaved changes; stop writing files before snapshot_create.
+snapshot_create answers NO_CHANGES (not an error) when the folder equals the newest version.
+history_list gives snapshot ids (permanent) and commit ids; snapshot_diff and snapshot_diff_file compare two of them.
 Report error codes to the user as they are; do not describe a failure or a warning as success.`;
 
+// engine.info → engine_info, snapshot.diffFile → snapshot_diff_file.
 export function toolName(op: OperationName): string {
-  return op.replace(/\./g, '_');
+  return op.replace(/\./g, '_').replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
 }
 
 export async function serveMcp(options: { dataDir?: string }): Promise<void> {

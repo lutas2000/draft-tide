@@ -13,6 +13,9 @@ export default defineConfig({
     outDir: fileURLToPath(new URL('./dist/gui', import.meta.url)),
     emptyOutDir: true,
     sourcemap: true,
+    // One bundle read from disk inside the app (app://), never over a
+    // network: Vite's 500 kB web-page warning doesn't apply.
+    chunkSizeWarningLimit: 1024,
   },
   server: { port: 5317, strictPort: true, host: '127.0.0.1' },
 });

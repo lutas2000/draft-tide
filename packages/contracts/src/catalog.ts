@@ -1,5 +1,23 @@
 import { z } from 'zod';
 import { AgentAccess, EngineInfo, ProjectSummary } from './engine.ts';
+import {
+  FileDiff,
+  HistoryListInput,
+  HistoryPage,
+  SavedSnapshot,
+  SnapshotCreateInput,
+  SnapshotDiff,
+  SnapshotDiffFileInput,
+  SnapshotDiffInput,
+} from './history.ts';
+import {
+  FolderReview,
+  ProjectBindInput,
+  ProjectBindResult,
+  ProjectReviewInput,
+  ProjectStatus,
+  ProjectStatusInput,
+} from './project.ts';
 
 // The one list of Engine operations. The Engine dispatches from it, the
 // policy in core authorizes from it, the CLI and MCP server are generated from
@@ -38,6 +56,65 @@ export const OPERATIONS = {
     summary: 'Design folders connected to Draft Tide on this computer.',
     input: NoInput,
     output: z.array(ProjectSummary),
+    desktop: true,
+    tool: 'agent-access',
+    effect: 'read',
+  },
+  // Connecting a folder grants Draft Tide that folder: only the trusted GUI,
+  // from a folder the user picked (M1 plan §6.2, §9.1). The tool channel's
+  // request flow arrives with M1-05.
+  'project.review': {
+    summary: 'Review a folder before connecting it: repo form, what would be saved, settings.',
+    input: ProjectReviewInput,
+    output: FolderReview,
+    desktop: true,
+    tool: 'none',
+    effect: 'read',
+  },
+  'project.bind': {
+    summary: 'Connect a reviewed folder: git init if needed, write .drafttide.json, record the binding.',
+    input: ProjectBindInput,
+    output: ProjectBindResult,
+    desktop: true,
+    tool: 'none',
+    effect: 'write',
+  },
+  'project.status': {
+    summary: "A connected project's folder, repo state and unsaved changes since the newest version.",
+    input: ProjectStatusInput,
+    output: ProjectStatus,
+    desktop: true,
+    tool: 'agent-access',
+    effect: 'read',
+  },
+  'snapshot.create': {
+    summary: 'Save a version of the project folder (NO_CHANGES when nothing changed).',
+    input: SnapshotCreateInput,
+    output: SavedSnapshot,
+    desktop: true,
+    tool: 'agent-access',
+    effect: 'write',
+  },
+  'history.list': {
+    summary: "The project's versions and other tools' commits, newest first.",
+    input: HistoryListInput,
+    output: HistoryPage,
+    desktop: true,
+    tool: 'agent-access',
+    effect: 'read',
+  },
+  'snapshot.diff': {
+    summary: 'Files added, modified, deleted or renamed between two versions.',
+    input: SnapshotDiffInput,
+    output: SnapshotDiff,
+    desktop: true,
+    tool: 'agent-access',
+    effect: 'read',
+  },
+  'snapshot.diffFile': {
+    summary: 'Line-by-line changes of one file between two versions (text files within the diff budget).',
+    input: SnapshotDiffFileInput,
+    output: FileDiff,
     desktop: true,
     tool: 'agent-access',
     effect: 'read',

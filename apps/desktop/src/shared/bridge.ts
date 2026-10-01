@@ -14,6 +14,9 @@ export interface BridgeEvent {
 
 export interface DraftTideBridge {
   invoke(op: string, payload: unknown): Promise<Envelope<unknown>>;
+  // The native folder picker. A folder chosen here (and only one chosen here)
+  // may then be reviewed and connected; null when the user cancels.
+  chooseFolder(): Promise<string | null>;
   connectionState(): Promise<ConnectionState>;
   reconnect(): Promise<ConnectionState>;
   onEvent(listener: (e: BridgeEvent) => void): () => void;
@@ -22,6 +25,7 @@ export interface DraftTideBridge {
 
 export const IPC = {
   invoke: 'dt:invoke',
+  chooseFolder: 'dt:choose-folder',
   connectionState: 'dt:connection-state',
   reconnect: 'dt:reconnect',
   event: 'dt:event',

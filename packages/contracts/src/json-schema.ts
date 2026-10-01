@@ -3,6 +3,8 @@ import { OPERATIONS, type OperationName } from './catalog.ts';
 import { AgentAccess, EngineInfo, ProjectSummary } from './engine.ts';
 import { envelopeSchema } from './envelope.ts';
 import { ErrorInfo, JsonValue } from './errors.ts';
+import { FileDiff, HistoryEntry, SavedSnapshot, SnapshotDiff } from './history.ts';
+import { FolderReview, ProjectStatus } from './project.ts';
 import { ProjectConfig } from './project-config.ts';
 import { ClientMessage, Discovery, EngineMessage } from './protocol.ts';
 import { CaptureProgress, RepoBlocker, RepoWarning, UnsupportedEntry } from './scope.ts';
@@ -28,6 +30,12 @@ export function publicSchemas(): Record<string, z.ZodType> {
     'capture-progress': CaptureProgress,
     'save-progress': SaveProgress,
     'commit-identity': CommitIdentity,
+    'folder-review': FolderReview,
+    'project-status': ProjectStatus,
+    'history-entry': HistoryEntry,
+    'saved-snapshot': SavedSnapshot,
+    'snapshot-diff': SnapshotDiff,
+    'file-diff': FileDiff,
   };
   for (const name of Object.keys(OPERATIONS) as OperationName[]) {
     const spec = OPERATIONS[name];

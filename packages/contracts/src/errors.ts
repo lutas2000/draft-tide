@@ -48,6 +48,9 @@ export const ERROR_CATALOG = {
   ENGINE_UNAVAILABLE: { retryable: true },
   INVALID_ARGUMENT: { retryable: false },
   INTERNAL_ERROR: { retryable: false },
+  // Added by M1-04
+  PROJECT_ALREADY_BOUND: { retryable: false },
+  SNAPSHOT_NOT_FOUND: { retryable: false },
 } as const satisfies Record<string, { retryable: boolean; noop?: true }>;
 
 export type ErrorCode = keyof typeof ERROR_CATALOG;

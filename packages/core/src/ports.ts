@@ -7,14 +7,16 @@ import type {
   IsoTimestamp,
   OperationId,
   ProjectConfig,
+  ProjectId,
   ProjectSummary,
   RepoBlocker,
   RepoWarning,
 } from '@draft-tide/contracts';
 
 // What core needs from the outside. The Engine's composition root provides
-// real implementations (local-store, Node runtime); tests may provide their
-// own. The remote provider port arrives with its implementation (M1-07).
+// real implementations (local-store, git-backend, adapter-filesystem, the Node
+// runtime); tests may provide their own. The remote provider port arrives with
+// its implementation (M1-07).
 
 export interface Clock {
   nowIso(): IsoTimestamp;
@@ -28,7 +30,12 @@ export interface LocalStore {
   // Missing or unreadable means off.
   getAgentAccess(): AgentAccess;
   setAgentAccess(enabled: boolean, at: IsoTimestamp): AgentAccess;
+  // Bindings: one canonical root per project, one project per root.
   listProjects(): ProjectSummary[];
+  getProject(projectId: ProjectId): ProjectSummary | null;
+  findProjectByRoot(root: string): ProjectSummary | null;
+  insertProject(project: ProjectSummary): void;
+  updateProject(projectId: ProjectId, changes: { root?: string; name?: string }): void;
 }
 
 // Pushes events to connected desktop sessions.
@@ -50,6 +57,22 @@ export interface CorePorts {
   store: LocalStore;
   events: EventSink;
   identity: EngineIdentity;
+  host: ProjectHost;
+}
+
+// Opens what a project use case needs for one folder (implemented by the
+// Engine's composition root with git-backend and adapter-filesystem).
+export interface ProjectHost {
+  // The folder's canonical (real) path. INVALID_ARGUMENT for a relative path,
+  // LOCAL_ROOT_UNAVAILABLE when it is not a folder, REPO_UNSUPPORTED
+  // (overlaps-app-data) when it overlaps Draft Tide's data directory.
+  canonicalRoot(path: string): Promise<string>;
+  openRepo(root: string): ProjectGit;
+  // Lists a folder that has no `.git` yet through a scratch git dir in the
+  // data directory; nothing is written into the folder. dispose removes it.
+  openListingRepo(root: string): Promise<{ repo: GitRepo; dispose(): Promise<void> }>;
+  openWorkspace(root: string): Workspace;
+  createStaging(projectId: ProjectId, operationId: OperationId): Promise<StagingArea>;
 }
 
 // ---- Git: the project's own repo (implemented by @draft-tide/git-backend)
@@ -291,6 +314,11 @@ export interface Workspace {
   stage(path: string, expected: FileIdentity, dest: string, signal?: AbortSignal): Promise<DigestResult>;
   // The volume new Git objects are written to.
   projectSpace(): Promise<VolumeSpace>;
+  // Replaces `.drafttide.json` with these bytes, atomically and only if the
+  // file is still what was reviewed: the blob id of its bytes, or null when
+  // it must not exist. Anything else is SCOPE_CHANGED and nothing is written.
+  // The one working file Draft Tide writes before M1-05's write-back.
+  writeProjectConfig(bytes: Uint8Array, expected: GitOid | null): Promise<void>;
 }
 
 // Immutable staging for one operation, outside the project folder

@@ -13,6 +13,7 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
 
 const bridge: DraftTideBridge = {
   invoke: (op, payload) => ipcRenderer.invoke(IPC.invoke, op, payload),
+  chooseFolder: () => ipcRenderer.invoke(IPC.chooseFolder),
   connectionState: () => ipcRenderer.invoke(IPC.connectionState),
   reconnect: () => ipcRenderer.invoke(IPC.reconnect),
   onEvent: (listener) => subscribe<BridgeEvent>(IPC.event, listener),

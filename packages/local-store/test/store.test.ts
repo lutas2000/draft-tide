@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
-import { DtError } from '@draft-tide/contracts';
+import { DtError, ProjectId } from '@draft-tide/contracts';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MIGRATIONS, STATE_DB_FILE, openLocalStore, tryAcquireEngineLock, type Migration } from '../src/index.ts';
 
@@ -81,6 +81,28 @@ describe('openLocalStore', () => {
     raw.close();
     const again = await openLocalStore({ dataDir });
     expect(again.listProjects().map((p) => p.name)).toEqual(['A', 'B']);
+    again.close();
+  });
+
+  it('binds, finds, relinks and renames projects, one root per project', async () => {
+    const dataDir = tempDir();
+    const store = await openLocalStore({ dataDir });
+    const a = { projectId: ProjectId.parse(randomUUID()), name: 'A', root: '/a', boundAt: new Date().toISOString() };
+    store.insertProject(a);
+    expect(store.getProject(a.projectId)).toEqual(a);
+    expect(store.findProjectByRoot('/a')).toEqual(a);
+    expect(store.findProjectByRoot('/elsewhere')).toBeNull();
+    expect(store.getProject(ProjectId.parse(randomUUID()))).toBeNull();
+    // A second binding of the same root, or of the same project, is refused.
+    expect(() => store.insertProject({ ...a, projectId: ProjectId.parse(randomUUID()) })).toThrow(/UNIQUE/);
+    expect(() => store.insertProject({ ...a, root: '/b' })).toThrow(/UNIQUE|PRIMARY/);
+    store.updateProject(a.projectId, { root: '/moved' });
+    store.updateProject(a.projectId, { name: 'Renamed' });
+    expect(store.getProject(a.projectId)).toEqual({ ...a, root: '/moved', name: 'Renamed' });
+    expect(() => store.updateProject(ProjectId.parse(randomUUID()), { name: 'x' })).toThrow(DtError);
+    store.close();
+    const again = await openLocalStore({ dataDir });
+    expect(again.findProjectByRoot('/moved')?.projectId).toBe(a.projectId);
     again.close();
   });
 

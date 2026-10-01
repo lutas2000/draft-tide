@@ -222,3 +222,46 @@ describe.runIf(process.platform === 'darwin')('desktop instance pinning (macOS)'
     expect(answer).toMatchObject({ type: 'rejected', error: { code: 'UNAUTHENTICATED' } });
   });
 });
+
+describe('Engine server', () => {
+  it('answers a result too large for one control message with an error and keeps serving', async () => {
+    const { createEngineServer } = await import('../src/engine/server.ts');
+    const { EngineInstanceId } = await import('@draft-tide/contracts');
+    const { EngineConnection } = await import('@draft-tide/engine-client');
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const huge = 'x'.repeat(2 * 1024 * 1024);
+    const core = {
+      handle: (_channel: string, op: string) =>
+        op === 'project.list' ? Promise.resolve([huge]) : Promise.resolve({ fine: true }),
+      operationsFor: () => ['engine.info', 'project.list'] as never[],
+    };
+    const server = createEngineServer({
+      core,
+      verifier: { mode: 'development', pin: () => ({ ok: true, instance: null }), sameInstance: () => true },
+      instanceId: EngineInstanceId.parse('00000000-0000-4000-8000-000000000001'),
+      toolToken: 't'.repeat(43),
+      log: () => undefined,
+      onActivity: () => undefined,
+    });
+    const socket =
+      process.platform === 'win32'
+        ? `\\\\.\\pipe\\dt-test-${process.pid}-${Date.now()}`
+        : join(mkdtempSync(join(tmpdir(), 'dt-srv-')), 's.sock');
+    await new Promise<void>((resolve) => server.server.listen(socket, resolve));
+    try {
+      const conn = await EngineConnection.open(socket, {
+        type: 'hello',
+        protocolVersion: 1,
+        channel: 'cli',
+        client: { name: 'test', version: '0' },
+        toolToken: 't'.repeat(43),
+      });
+      expect(await codeOf(conn.callRaw('project.list', {}))).toBe('RESOURCE_BUDGET_EXCEEDED');
+      expect(await conn.callRaw('engine.info', {})).toEqual({ fine: true });
+      conn.close();
+    } finally {
+      server.server.close();
+    }
+  });
+});

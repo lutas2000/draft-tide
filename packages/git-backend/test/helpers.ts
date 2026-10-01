@@ -34,7 +34,10 @@ export function gitRuntime(): GitRuntime {
 
 // The user's own Git, without Draft Tide's hardening: what an engineer or a
 // plain `git status` would do. It builds fixtures and serves as the control
-// in hostile-repo tests. It never reads the developer's real config.
+// in hostile-repo tests. It never reads the developer's real config, and it
+// runs no automatic maintenance: after a commit, Git would otherwise start
+// `git maintenance run --auto` in the background, whose lock files appear in
+// `.git` while a test checks that nothing there changed.
 let plainConfig: string | null = null;
 export function plainGitEnv(): NodeJS.ProcessEnv {
   if (!plainConfig) {
@@ -42,7 +45,7 @@ export function plainGitEnv(): NodeJS.ProcessEnv {
     plainConfig = join(dir, 'gitconfig');
     writeFileSync(
       plainConfig,
-      '[user]\n\tname = Fixture\n\temail = fixture@example.com\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgSign = false\n[protocol "file"]\n\tallow = always\n',
+      '[user]\n\tname = Fixture\n\temail = fixture@example.com\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgSign = false\n[protocol "file"]\n\tallow = always\n[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n',
     );
   }
   const env: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_GLOBAL: plainConfig, GIT_CONFIG_NOSYSTEM: '1' };

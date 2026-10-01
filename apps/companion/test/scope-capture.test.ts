@@ -54,19 +54,14 @@ function adopt(root: string, over: Partial<ProjectConfig> = {}): ProjectConfig {
   return config;
 }
 
-async function setup(
-  root: string,
-  wrap: (ws: Workspace) => Workspace = (ws) => ws,
-): Promise<CaptureOptions & { projectId: string }> {
+async function setup(root: string, wrap: (ws: Workspace) => Workspace = (ws) => ws): Promise<CaptureOptions> {
   const canonical = await canonicalRoot(root, { appDataDir: dataDir });
   const repo = openGitRepo(rt, canonical);
   const probe = await repo.probe();
-  const projectId = randomUUID();
   return {
-    projectId,
     repo,
     workspace: wrap(openWorkspace(canonical)),
-    staging: await createStagingArea(dataDir, projectId, randomUUID()),
+    staging: await createStagingArea(dataDir, randomUUID(), randomUUID()),
     probe,
     retryDelayMs: () => 1,
   };

@@ -39,3 +39,8 @@ export async function engineCall<N extends DesktopOperationName>(
   }
   return envelope.data as OperationOutput<N>;
 }
+
+// The native folder picker; null when cancelled or outside the app.
+export async function chooseFolder(): Promise<string | null> {
+  return (await bridge()?.chooseFolder()) ?? null;
+}

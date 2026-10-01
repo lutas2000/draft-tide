@@ -1,7 +1,13 @@
 import Database from 'better-sqlite3';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { DtError, type AgentAccess, type IsoTimestamp, type ProjectSummary } from '@draft-tide/contracts';
+import {
+  DtError,
+  type AgentAccess,
+  type IsoTimestamp,
+  type ProjectId,
+  type ProjectSummary,
+} from '@draft-tide/contracts';
 import type { LocalStore } from '@draft-tide/core';
 import { MIGRATIONS, type Migration } from './migrations.ts';
 
@@ -134,6 +140,10 @@ interface ProjectRow {
   bound_at: string;
 }
 
+function toSummary(r: ProjectRow): ProjectSummary {
+  return { projectId: r.project_id, name: r.name, root: r.root, boundAt: r.bound_at } as ProjectSummary;
+}
+
 class SqliteLocalStore implements LocalStoreHandle {
   readonly storageSchemaVersion: number;
   readonly sqliteVersion: string;
@@ -173,14 +183,41 @@ class SqliteLocalStore implements LocalStoreHandle {
     return { enabled, updatedAt: at };
   }
 
+  // Shapes are checked against the contract by core before they leave.
   listProjects(): ProjectSummary[] {
     const rows = this.#db
       .prepare('SELECT project_id, name, root, bound_at FROM project_bindings ORDER BY bound_at, project_id')
       .all() as ProjectRow[];
-    // Shapes are checked against the contract by core before they leave.
-    return rows.map(
-      (r) => ({ projectId: r.project_id, name: r.name, root: r.root, boundAt: r.bound_at }) as ProjectSummary,
-    );
+    return rows.map(toSummary);
+  }
+
+  getProject(projectId: ProjectId): ProjectSummary | null {
+    const row = this.#db
+      .prepare('SELECT project_id, name, root, bound_at FROM project_bindings WHERE project_id = ?')
+      .get(projectId) as ProjectRow | undefined;
+    return row ? toSummary(row) : null;
+  }
+
+  findProjectByRoot(root: string): ProjectSummary | null {
+    const row = this.#db
+      .prepare('SELECT project_id, name, root, bound_at FROM project_bindings WHERE root = ?')
+      .get(root) as ProjectRow | undefined;
+    return row ? toSummary(row) : null;
+  }
+
+  // The table's keys refuse a second binding of a project or of a root.
+  insertProject(project: ProjectSummary): void {
+    this.#db
+      .prepare('INSERT INTO project_bindings (project_id, root, name, bound_at) VALUES (?, ?, ?, ?)')
+      .run(project.projectId, project.root, project.name, project.boundAt);
+  }
+
+  updateProject(projectId: ProjectId, changes: { root?: string; name?: string }): void {
+    const current = this.getProject(projectId);
+    if (!current) throw new DtError('PROJECT_NOT_BOUND', 'no connected project has this id', { projectId });
+    this.#db
+      .prepare('UPDATE project_bindings SET root = ?, name = ? WHERE project_id = ?')
+      .run(changes.root ?? current.root, changes.name ?? current.name, projectId);
   }
 
   close(): void {
