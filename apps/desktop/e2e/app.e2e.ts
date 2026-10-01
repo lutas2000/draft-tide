@@ -27,7 +27,11 @@ function cliEnvelope(...args: string[]): { ok: boolean; data: unknown; error: { 
 // Draft Tide's hardening (it never reads the developer's config).
 const designDir = realpathSync(mkdtempSync(join(tmpdir(), 'dt-e2e-design-')));
 const gitConfig = join(mkdtempSync(join(tmpdir(), 'dt-e2e-git-')), 'gitconfig');
-writeFileSync(gitConfig, '[user]\n\tname = Engineer\n\temail = eng@example.com\n[init]\n\tdefaultBranch = main\n');
+// No background maintenance: its lock files would race with the checks.
+writeFileSync(
+  gitConfig,
+  '[user]\n\tname = Engineer\n\temail = eng@example.com\n[init]\n\tdefaultBranch = main\n[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n',
+);
 function plainGit(...args: string[]): string {
   const env: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: '1' };
   return execFileSync('git', args, { cwd: designDir, env, encoding: 'utf8' });
