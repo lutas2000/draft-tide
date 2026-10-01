@@ -88,7 +88,7 @@ An operation that does not exist on a channel returns `UNKNOWN_OPERATION`. The E
 
 ## Open for M1-00
 
-1. **Desktop enrollment.** In M0 the desktop credential is a 0600 `runtime/desktop.token` file, readable by any same-user process. Candidate replacements:
+1. **Desktop enrollment.** *Decided 2026-10-01 ([desktop-auth-spike.md](desktop-auth-spike.md)): the macOS option below. The Engine checks the peer's audit token against a requirement pinning the app identifier and team, plus a nonce handshake bound to that process instance. Token custody is still open.* In M0 the desktop credential is a 0600 `runtime/desktop.token` file, readable by any same-user process. Candidate replacements:
    - macOS: get the peer's audit token (`LOCAL_PEERTOKEN`) and check its code signature against the app's designated requirement. This needs a small native addon in the companion.
    - Windows: `GetNamedPipeClientProcessId` plus Authenticode verification.
    - Alternative: Electron Main spawns the Engine and passes an inherited socketpair. That only works when the desktop starts the Engine, so it also needs an upgrade path for an Engine the CLI started.

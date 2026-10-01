@@ -1,0 +1,14 @@
+{
+  "name": "@draft-tide/desktop-auth-spike",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Feasibility spike: how the Engine can tell the real Draft Tide desktop app from other same-user processes (macOS). Throwaway code, not product.",
+  "engines": {
+    "node": ">=24.11 <25"
+  },
+  "scripts": {
+    "typecheck": "../m0/core/node_modules/.bin/tsc -p .",
+    "verify": "node src/verify.ts"
+  }
+}
