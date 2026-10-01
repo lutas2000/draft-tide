@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -11,6 +11,7 @@ import {
   runtimePaths,
   type EngineConnection,
 } from '@draft-tide/engine-client';
+import { tryAcquireEngineLock } from '@draft-tide/local-store';
 
 export const COMPANION = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const ENGINE_SOURCE = join(COMPANION, 'src', 'engine', 'main.ts');
@@ -50,10 +51,26 @@ export async function stopEngine(dataDir: string): Promise<void> {
   }
 }
 
+// Every Engine of a data store holds its lock while alive, including one that
+// is not (or no longer) named in the discovery file, such as an Engine that is
+// mid-shutdown. Taking the lock proves none is left.
+async function waitForNoEngine(dataDir: string, timeoutMs = 15_000): Promise<void> {
+  const file = runtimePaths(dataDir).lockFile;
+  if (!existsSync(file)) return;
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const lock = tryAcquireEngineLock(file);
+    if (lock) return lock.release();
+    if (Date.now() > deadline) throw new Error(`an Engine for ${dataDir} is still running`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
 export async function cleanupDataDirs(): Promise<void> {
   for (const d of created.splice(0)) {
     await stopEngine(d);
-    // Windows releases a killed process's file handles a moment later.
+    await waitForNoEngine(d);
+    // Windows releases a terminated process's file handles a moment later.
     rmSync(d, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 }

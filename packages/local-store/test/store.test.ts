@@ -160,25 +160,35 @@ describe('engine lock', () => {
     again?.release();
   });
 
-  it('is released by the kernel when the holder is killed', async () => {
+  it('stays held while the holder lives and is released by the kernel when it is killed', async () => {
     const file = join(tempDir(), 'engine.lock.sqlite');
     const lockModule = pathToFileURL(fileURLToPath(new URL('../src/engine-lock.ts', import.meta.url))).href;
+    // The child drops the handle and forces a GC: the lock must survive that
+    // (a collected connection would otherwise close and release it).
     const child = spawn(
       process.execPath,
       [
+        '--expose-gc',
         '--input-type=module',
         '-e',
-        `const m = await import(${JSON.stringify(lockModule)}); m.tryAcquireEngineLock(${JSON.stringify(file)}) ? console.log('held') : console.log('busy'); setInterval(() => {}, 1000);`,
+        `const m = await import(${JSON.stringify(lockModule)});
+         const got = m.tryAcquireEngineLock(${JSON.stringify(file)}) !== null;
+         for (let i = 0; i < 3; i++) { globalThis.gc(); await new Promise((r) => setTimeout(r, 20)); }
+         console.log(got ? 'held' : 'busy');
+         setInterval(() => {}, 1000);`,
       ],
       { stdio: ['ignore', 'pipe', 'inherit'] },
     );
-    const line = await new Promise<string>((resolve) =>
-      child.stdout.once('data', (d: Buffer) => resolve(d.toString().trim())),
-    );
-    expect(line).toBe('held');
-    expect(tryAcquireEngineLock(file)).toBeNull();
-    child.kill('SIGKILL');
-    await new Promise((r) => child.once('exit', r));
+    try {
+      const line = await new Promise<string>((resolve) =>
+        child.stdout.once('data', (d: Buffer) => resolve(d.toString().trim())),
+      );
+      expect(line).toBe('held');
+      expect(tryAcquireEngineLock(file)).toBeNull();
+    } finally {
+      child.kill('SIGKILL');
+      await new Promise((r) => child.once('exit', r));
+    }
     const taken = tryAcquireEngineLock(file);
     expect(taken).not.toBeNull();
     taken?.release();

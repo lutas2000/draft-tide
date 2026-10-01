@@ -10,6 +10,11 @@ export interface EngineLock {
   release(): void;
 }
 
+// A connection that is no longer referenced gets garbage-collected and closed,
+// which silently drops the lock while its holder is still alive. Held
+// connections stay referenced here until release() or process exit.
+const held = new Set<Database.Database>();
+
 export function tryAcquireEngineLock(file: string): EngineLock | null {
   const db = new Database(file);
   try {
@@ -22,11 +27,10 @@ export function tryAcquireEngineLock(file: string): EngineLock | null {
     if (code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED') return null;
     throw e;
   }
-  let held = true;
+  held.add(db);
   return {
     release() {
-      if (!held) return;
-      held = false;
+      if (!held.delete(db)) return;
       try {
         db.exec('ROLLBACK');
       } finally {
