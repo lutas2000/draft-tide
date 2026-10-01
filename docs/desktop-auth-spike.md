@@ -4,7 +4,7 @@ Date: 2026-10-01 · Machine: macOS 27.0.1, Apple Silicon (arm64) · Spike code: 
 
 This is M1-00 open item 1 from [safety-model.md](safety-model.md#open-for-m1-00). In M0 the desktop proves itself with a 0600 token file, which any process of the same user can read. The spike asks how the Engine can tell the real desktop app from any other same-user process, and what defeats each approach. It is throwaway code and covers macOS only.
 
-Status: 16/16 checks pass on three consecutive runs. Bundled Node 24.18.1 (Developer ID: Node.js Foundation), Electron 44.5.1 (dev build, ad-hoc) and the packaged M0 app (ad-hoc, fuses set).
+Status: 16/16 checks pass on three consecutive runs with ad-hoc signatures. Bundled Node 24.18.1 (Developer ID: Node.js Foundation), Electron 44.5.1 (dev build, ad-hoc) and the packaged M0 app (ad-hoc, fuses set). Re-verified the same day with a real Developer ID (team ZUHKJTHALN): 21/21 in the suite and 6/6 on a re-signed, notarized copy of the M0 app ([below](#developer-id-re-verification)).
 
 **Decision (2026-10-01): option P, below.** The Engine verifies the desktop by code signature with a nonce handshake. It is written into `CLAUDE.md` and `.ref/` (M1 plan v2.4). Token custody stays open.
 
@@ -41,7 +41,7 @@ anchor apple generic and identifier "<desktop app id>" and certificate leaf[subj
 - **Team alone (A4).** It accepts anything the team signed, and that includes the companion Node, which runs any script. The bundled Node here is signed by the Node.js Foundation, and an inline `-e` script satisfied `anchor apple generic and certificate leaf[subject.OU] = "HX7739G8FX"`. Draft Tide will re-sign the companion Node with its own team, so the same thing would happen there.
 - **Consequence.** The companion Node (and any other interpreter in the bundle) must be signed with an identifier different from the desktop app's. No identity that belongs to an interpreter may ever be trusted.
 
-The spike had no Developer ID, so it used `cdhash` in place of the team anchor. The anchored form was exercised only against Node's real signature (A4).
+The first run had no Developer ID, so it used `cdhash` in place of the team anchor. The [Developer ID re-run](#developer-id-re-verification) uses the anchored form itself (A2, A3, A12).
 
 ### 2. Checking the peer at request time is racy on macOS
 
@@ -93,8 +93,8 @@ The Engine checks every desktop connection by code signature, whoever started it
    - Main refuses debugging switches before anything else runs (B2).
    - Keep the fuses (B3).
    - Every companion process runs with `--disable-sigusr1` (C1).
-   - Release builds leave `get-task-allow` off (not tested here).
-4. **Cost.** A small N-API addon in the companion that uses the Security framework and is loaded only there. The mechanism must be re-verified against a real Developer ID build. Windows needs its own mechanism.
+   - Release builds leave `get-task-allow` off. The companion Node is re-signed with hardened runtime and JIT only, and native addons are team-signed ([re-verification](#developer-id-re-verification)).
+4. **Cost.** A small N-API addon in the companion that uses the Security framework and is loaded only there. Re-verified against a real Developer ID and a notarized build. Windows needs its own mechanism.
 
 **Still open under P: token custody (finding 5).** The desktop cannot verify an Engine that runs on the shared companion Node, and the keychain can't tell the Engine apart from any other script on that Node. The candidate for the M1-00 keychain item is to build the Engine as a single executable (Node SEA) with its own signing identifier that cannot load other scripts, so that the keychain ACL and the desktop can both trust it by signature. Not verified: whether a SEA build ignores `NODE_OPTIONS` and Node command-line options, and whether it survives packaging and signing.
 
@@ -104,13 +104,54 @@ When the GUI starts, Main spawns the Engine from its own bundle and passes a soc
 - Saves made through CLI or MCP while the app has never been opened wait for the app before they push.
 - Opening the app restarts an Engine that CLI or MCP started.
 
+## Developer ID re-verification
+
+Run on 2026-10-01 with a Developer ID Application certificate (team ZUHKJTHALN) and a notarytool keychain profile.
+
+- **Suite.** With `SPIKE_SIGN_IDENTITY` set, the suite signs the desktop stand-in, the addon and a team copy of the companion Node with hardened runtime and a secure timestamp.
+- **Requirement.** The "pinned" requirement becomes the product requirement, `anchor apple generic and identifier "<id>" and certificate leaf[subject.OU] = "<team>"`. The variant with the Developer ID markers is also checked: `certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists`.
+- **Packaged app.** `src/release.ts` re-signs a copy of the packaged M0 app with `@electron/osx-sign`, notarizes and staples it, and checks the running app.
+
+**Suite: 21/21.** A1–A11, B1–B3, C1 and D1 all hold with the anchored requirement. New checks:
+
+| Check | Result |
+|---|---|
+| A12 | The companion Node re-signed by the team, under its own identifier, runs a script that satisfies a team-only requirement but not the product one |
+| E1 | A same-user process, ad-hoc signed with the debugger entitlement, gets the **official** Node's task port with no prompt (the account is in `_developer`). It cannot get the re-signed Node's |
+| E2 | `DYLD_INSERT_LIBRARIES` injects a library into the official Node and is ignored by the re-signed one |
+| E3 | The re-signed Node loads a team-signed addon and refuses an ad-hoc one. Adding `disable-library-validation` lets the ad-hoc one in |
+| E4 | Hardened runtime doesn't stop SIGUSR1: the re-signed Node still opens an inspector, so `--disable-sigusr1` is still needed |
+
+**Packaged app: 6/6.**
+
+| Check | Result |
+|---|---|
+| R1 | All 33 Mach-O files are team-signed with hardened runtime, and none has `get-task-allow`, dyld variables or `disable-library-validation`. The bundle passes `--deep --strict` and the product requirement. The companion Node has its own identifier and fails it |
+| R2 | Apple notarized it, the ticket stapled, and Gatekeeper reports "Notarized Developer ID" |
+| R3 | The running app satisfies the product requirement by pid. The Engine it starts comes up, which means better-sqlite3 (team-signed) loads under library validation. The Engine fails the product requirement and passes team-only |
+| R4 | The debugger-entitled probe cannot get the task port of the app or of its Engine |
+| R5 | SIGUSR1 opens no inspector in the app (fuse) |
+| R6 | Signing and notarization don't stop `--remote-debugging-port`: another process still drives the desktop bridge. The Main guard stays required |
+
+### What changes
+
+1. **The official Node binary must not ship as is.** Node.js Foundation signs it with `get-task-allow`, `allow-dyld-environment-variables` and `disable-library-validation`, plus JIT. With those, any same-user process can read and drive the Engine's memory, including a token, or inject a library (E1, E2). Re-sign it with the team's Developer ID and hardened runtime, keeping only the JIT entitlement.
+2. **Native addons must be team-signed.** Without `disable-library-validation`, the companion Node loads only code signed by the team (E3, R3). This also stops an attacker's ad-hoc addon from loading into the Engine's Node.
+3. **The requirement should carry the Developer ID markers.** That is the form of a Developer ID designated requirement.
+   - **Why.** `anchor apple generic` alone also admits Apple Development certificates of the same team. Any team member can create one, and the builds they sign usually carry `get-task-allow`.
+   - **Not tested.** This is reasoned: the spike had no Apple Development certificate from the same team to test with.
+4. **Unchanged.** The nonce handshake, the Main guard (R6), the fuses (R5) and `--disable-sigusr1` (E4) all stay. Hardened runtime blocks memory access, but it doesn't replace any of these.
+5. **Token custody is still open, but the problem is narrower.**
+   - **Closed.** With the companion Node hardened, a same-user process can no longer read the Engine's memory (E1, R4).
+   - **Still open.** Any script that same Node runs still carries its signature (A12), so a keychain ACL keyed on that Node would still trust any script.
+   - **Candidate.** The Node SEA candidate stands.
+
 ## Not verified
 
-- A real Developer ID signature on a Draft Tide build. The team-anchored requirement ran only against Node's signature.
+- The same-team Apple Development case (point 3 under "What changes").
 - Keychain ACL behavior: whether a companion-Node script can read an item trusted for that Node without a prompt (finding 5 is reasoned).
 - A Node SEA Engine with its own signing identifier, the token-custody candidate under P.
 - Re-checking every message against T0 after the handshake.
-- Hardened-runtime protection of the Engine's memory from same-user processes (`task_for_pid`).
 - Driving the app through AppleScript or Accessibility (gated by TCC), and other Chromium or Electron switches beyond the refused list.
 - Windows: named-pipe handle inheritance, `GetNamedPipeClientProcessId` races, Authenticode.
 
@@ -123,3 +164,10 @@ node src/verify.ts
 ```
 
 It needs Xcode's clang, a Node with headers (nvm or Homebrew) to build the addon, and the built M0 desktop spike. It briefly starts the dev Electron and the packaged M0 app with hidden windows and temporary data directories. Results go to `spikes/desktop-auth/results/` (git-ignored).
+
+The Developer ID run needs a Developer ID Application certificate in the keychain and, for R2, a `notarytool store-credentials` profile. Run `verify.ts` first, because it builds the probes `release.ts` uses. R2 uploads the M0 app to Apple's notary service.
+
+```bash
+SPIKE_SIGN_IDENTITY="Developer ID Application: <name> (<team>)" SPIKE_TEAM=<team> node src/verify.ts
+SPIKE_SIGN_IDENTITY="Developer ID Application: <name> (<team>)" SPIKE_TEAM=<team> SPIKE_NOTARY_PROFILE=<profile> node src/release.ts
+```

@@ -1,11 +1,23 @@
 // Builds the peer addon and the signed stand-in clients with Xcode's clang.
 // No node-gyp: N-API symbols resolve at load time (-undefined dynamic_lookup).
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 export const DESKTOP_ID = 'dev.drafttide.spike.desktop';
 export const ATTACKER_ID = 'dev.drafttide.spike.attacker';
+export const TEAM_NODE_ID = 'dev.drafttide.spike.companion-node';
+
+// Optional real identities (SHA-1 or name from `security find-identity`):
+//   devId    Developer ID Application: signs the desktop stand-in, the addon
+//            and a team copy of the companion Node, with hardened runtime
+//   appleDev Apple Development: signs another stand-in with the desktop's
+//            identifier, to show what `anchor apple generic` alone admits
+export interface Identities {
+  devId?: string;
+  appleDev?: string;
+  bundledNode?: string;
+}
 
 export interface Built {
   addon: string;
@@ -14,6 +26,12 @@ export interface Built {
   attacker: string;
   desktopCdhash: string;
   forgedCdhash: string;
+  teamNode?: string;
+  teamNodeLoose?: string;
+  appleDevSigned?: string;
+  adhocAddon?: string;
+  taskport?: string;
+  injectLib?: string;
 }
 
 function nodeInclude(): string {
@@ -36,7 +54,22 @@ function sign(bin: string, identifier: string): void {
   execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', '--identifier', identifier, bin], { stdio: ['ignore', 'ignore', 'pipe'] });
 }
 
-export function build(root: string): Built {
+// A release-style signature: hardened runtime, secure timestamp, and only the
+// entitlements given (never get-task-allow).
+export function signWith(identity: string, bin: string, identifier: string, entitlements?: string): void {
+  const args = ['--force', '--sign', identity, '--options', 'runtime', '--timestamp', '--identifier', identifier];
+  if (entitlements) args.push('--entitlements', entitlements);
+  execFileSync('/usr/bin/codesign', [...args, bin], { stdio: ['ignore', 'ignore', 'pipe'] });
+}
+
+export function entitlementsFile(dir: string, name: string, keys: string[]): string {
+  const f = join(dir, `${name}.plist`);
+  const body = keys.map((k) => `  <key>${k}</key><true/>`).join('\n');
+  writeFileSync(f, `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n${body}\n</dict>\n</plist>\n`);
+  return f;
+}
+
+export function build(root: string, ids: Identities = {}): Built {
   const out = join(root, '.work', 'build');
   mkdirSync(out, { recursive: true });
   // xcrun supplies the SDK root; the bare toolchain clang has none.
@@ -55,8 +88,53 @@ export function build(root: string): Built {
   copyFileSync(plain, desktopSim);
   copyFileSync(variant, forged);
   copyFileSync(plain, attacker);
-  sign(desktopSim, DESKTOP_ID);
   sign(forged, DESKTOP_ID); // same identifier, different code
   sign(attacker, ATTACKER_ID);
-  return { addon, desktopSim, forged, attacker, desktopCdhash: cdhash(desktopSim), forgedCdhash: cdhash(forged) };
+  const built: Built = { addon, desktopSim, forged, attacker, desktopCdhash: '', forgedCdhash: '' };
+  if (!ids.devId) {
+    sign(desktopSim, DESKTOP_ID);
+  } else {
+    signWith(ids.devId, desktopSim, DESKTOP_ID);
+    // The addon is loaded by Nodes under library validation, so it carries the
+    // team's signature. An ad-hoc copy shows what library validation refuses.
+    const adhocAddon = join(out, 'peer-adhoc.node');
+    copyFileSync(addon, adhocAddon);
+    sign(adhocAddon, 'peer-adhoc');
+    signWith(ids.devId, addon, 'dev.drafttide.spike.peer');
+    built.adhocAddon = adhocAddon;
+    if (ids.bundledNode) {
+      // The companion Node re-signed by the team under its own identifier,
+      // with only JIT (no get-task-allow, dyld variables or library exemption).
+      const teamNode = join(out, 'node-team');
+      copyFileSync(ids.bundledNode, teamNode);
+      signWith(ids.devId, teamNode, TEAM_NODE_ID, entitlementsFile(out, 'node', ['com.apple.security.cs.allow-jit']));
+      built.teamNode = teamNode;
+      // Same, plus disable-library-validation, to show what that exemption admits.
+      const loose = join(out, 'node-team-loose');
+      copyFileSync(ids.bundledNode, loose);
+      signWith(ids.devId, loose, TEAM_NODE_ID, entitlementsFile(out, 'node-loose', ['com.apple.security.cs.allow-jit', 'com.apple.security.cs.disable-library-validation']));
+      built.teamNodeLoose = loose;
+    }
+  }
+  if (ids.appleDev) {
+    const appleDevSigned = join(out, 'desktop-appledev');
+    copyFileSync(variant, appleDevSigned);
+    signWith(ids.appleDev, appleDevSigned, DESKTOP_ID);
+    built.appleDevSigned = appleDevSigned;
+  }
+  if (ids.devId) {
+    // Attacker-side probes for the hardened-runtime checks. The task-port probe
+    // is ad-hoc signed with the debugger entitlement, which anyone can do.
+    const taskport = join(out, 'taskport');
+    clang(['-O2', '-Wall', join(root, 'native', 'taskport.c'), '-o', taskport]);
+    execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', '--options', 'runtime', '--entitlements', entitlementsFile(out, 'debugger', ['com.apple.security.cs.debugger']), taskport], { stdio: ['ignore', 'ignore', 'pipe'] });
+    const injectLib = join(out, 'inject.dylib');
+    clang(['-O2', '-Wall', '-dynamiclib', join(root, 'native', 'inject.c'), '-o', injectLib]);
+    sign(injectLib, 'inject');
+    built.taskport = taskport;
+    built.injectLib = injectLib;
+  }
+  built.desktopCdhash = cdhash(desktopSim);
+  built.forgedCdhash = cdhash(forged);
+  return built;
 }
