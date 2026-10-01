@@ -82,8 +82,19 @@ describe('MCP server', () => {
   it('offers only tool-channel operations, with honest annotations', async () => {
     const client = await mcpClient(tempDataDir());
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(['engine_info', 'project_list']);
-    for (const t of tools) expect(t.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    expect(tools.map((t) => t.name).sort()).toEqual([
+      'engine_info',
+      'history_list',
+      'project_list',
+      'project_status',
+      'snapshot_create',
+      'snapshot_diff',
+      'snapshot_diff_file',
+    ]);
+    // Connecting a folder is the GUI's alone; saving writes, nothing here is destructive.
+    for (const t of tools) {
+      expect(t.annotations).toMatchObject({ readOnlyHint: t.name !== 'snapshot_create', destructiveHint: false });
+    }
     expect(client.getInstructions()).toMatch(/AGENT_ACCESS_DISABLED/);
     await client.close();
   });

@@ -11,11 +11,19 @@ import {
   runtimePaths,
   type EngineConnection,
 } from '@draft-tide/engine-client';
+import { findGitOnPath } from '@draft-tide/git-backend';
 import { tryAcquireEngineLock } from '@draft-tide/local-store';
 
 export const COMPANION = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const ENGINE_SOURCE = join(COMPANION, 'src', 'engine', 'main.ts');
 export const CLI_SOURCE = join(COMPANION, 'src', 'cli', 'main.ts');
+
+// The Engine starts with a minimal environment (no PATH on Windows): it runs
+// the Git the tests run, named explicitly. Spawned CLIs pass it on.
+const git = findGitOnPath();
+if (!git) throw new Error('these tests need git on PATH (or DRAFT_TIDE_GIT)');
+process.env['DRAFT_TIDE_GIT'] = git;
+export const GIT_FOR_ENGINE = git;
 
 const created: string[] = [];
 
@@ -83,7 +91,7 @@ export function connectTo(dataDir: string, channel: Channel, idleMs = 2_000): Pr
     launch: {
       nodePath: process.execPath,
       engineEntry: ENGINE_SOURCE,
-      env: { DRAFT_TIDE_ENGINE_IDLE_MS: String(idleMs) },
+      env: { DRAFT_TIDE_ENGINE_IDLE_MS: String(idleMs), DRAFT_TIDE_GIT: GIT_FOR_ENGINE },
     },
   });
 }

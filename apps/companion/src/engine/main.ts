@@ -17,6 +17,7 @@ import { createEngineCore } from '@draft-tide/core';
 import { resolveDataDir, runtimePaths } from '@draft-tide/engine-client';
 import { openLocalStore, tryAcquireEngineLock } from '@draft-tide/local-store';
 import { BUILD } from '../build-info.ts';
+import { createProjectHost, engineGitRuntime } from './host.ts';
 import { createPeerVerifier } from './peer-identity.ts';
 import { createEngineServer, type EngineServer } from './server.ts';
 
@@ -67,6 +68,8 @@ try {
 // Crash recovery (M1-05) runs here, before the Engine accepts any request.
 
 const verifier = createPeerVerifier(BUILD.desktopRequirement, log);
+const git = engineGitRuntime(BUILD, dataDir);
+if (!git) log('no Git available: projects can be listed but not reviewed, saved or read');
 const toolToken = randomBytes(32).toString('base64url');
 const startedAt = new Date().toISOString();
 let server: EngineServer | null = null;
@@ -81,6 +84,7 @@ const core = createEngineCore({
     desktopIdentity: verifier.mode,
     runtime: { node: process.version, platform: process.platform, arch: process.arch },
   },
+  host: createProjectHost({ dataDir, git }),
 });
 
 let lastActivity = Date.now();

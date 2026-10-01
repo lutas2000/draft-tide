@@ -175,16 +175,22 @@ export function createEngineServer(options: ServerOptions): EngineServer {
       }
       sessionInFlight++;
       inFlight++;
+      const fail = (e: unknown) => {
+        const info = toErrorInfo(e);
+        if (info.code === 'INTERNAL_ERROR') log(`internal error in ${msg.op.slice(0, 64)}: ${info.message}`);
+        send({ type: 'response', requestId: msg.requestId, ok: false, error: info });
+      };
       core
         .handle(channel, msg.op, msg.payload)
-        .then(
-          (data) => send({ type: 'response', requestId: msg.requestId, ok: true, data }),
-          (e: unknown) => {
-            const info = toErrorInfo(e);
-            if (info.code === 'INTERNAL_ERROR') log(`internal error in ${msg.op.slice(0, 64)}: ${info.message}`);
-            send({ type: 'response', requestId: msg.requestId, ok: false, error: info });
-          },
-        )
+        .then((data) => {
+          // A result too large for one control message is reported as such,
+          // never dropped (or allowed to take the Engine down).
+          try {
+            send({ type: 'response', requestId: msg.requestId, ok: true, data });
+          } catch (e) {
+            fail(e);
+          }
+        }, fail)
         .finally(() => {
           sessionInFlight--;
           inFlight--;
