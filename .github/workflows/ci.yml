@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -23,6 +26,9 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24.18.1
+          # pnpm comes from Corepack in the next step; setup-node's automatic
+          # pnpm cache would look for it before it exists.
+          package-manager-cache: false
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - run: pnpm run format:check
@@ -46,6 +52,9 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24.18.1
+          # pnpm comes from Corepack in the next step; setup-node's automatic
+          # pnpm cache would look for it before it exists.
+          package-manager-cache: false
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @draft-tide/contracts --filter @draft-tide/companion run build
@@ -59,6 +68,9 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24.18.1
+          # pnpm comes from Corepack in the next step; setup-node's automatic
+          # pnpm cache would look for it before it exists.
+          package-manager-cache: false
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
