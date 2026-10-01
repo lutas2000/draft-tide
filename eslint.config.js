@@ -1,6 +1,7 @@
 // Lint rules plus the module boundaries from CLAUDE.md, checked in CI:
-// contracts stay pure JSON/Zod, core stays free of drivers and UI, and the
-// clients (GUI, Main, CLI, MCP) never open the DB or run a writable core.
+// contracts stay pure JSON/Zod, core stays free of drivers and UI, the
+// adapters stay out of each other, and the clients (GUI, Main, CLI, MCP)
+// never open the DB, run a writable core or touch Git and the design folder.
 import js from '@eslint/js';
 import globals from 'globals';
 import tseslint from 'typescript-eslint';
@@ -17,7 +18,8 @@ const restrict = (paths, patterns = []) => ({
 
 const NODE_BUILTINS = { group: ['node:*'], message: 'Must stay runnable in the browser GUI.' };
 const DRIVERS_AND_UI = ['electron', 'react', 'react-dom', 'better-sqlite3', '@modelcontextprotocol/sdk'];
-const WRITERS = ['@draft-tide/core', '@draft-tide/local-store', 'better-sqlite3'];
+const ADAPTERS = ['@draft-tide/local-store', '@draft-tide/git-backend', '@draft-tide/adapter-filesystem'];
+const WRITERS = ['@draft-tide/core', ...ADAPTERS, 'better-sqlite3'];
 
 export default tseslint.config(
   {
@@ -54,20 +56,40 @@ export default tseslint.config(
   },
   {
     files: ['packages/contracts/src/**'],
-    rules: restrict(
-      [...DRIVERS_AND_UI, '@draft-tide/core', '@draft-tide/local-store', '@draft-tide/engine-client'],
-      [NODE_BUILTINS],
-    ),
+    rules: restrict([...DRIVERS_AND_UI, '@draft-tide/core', ...ADAPTERS, '@draft-tide/engine-client'], [NODE_BUILTINS]),
   },
   {
     files: ['packages/core/src/**'],
     rules: restrict([
       ...DRIVERS_AND_UI,
-      '@draft-tide/local-store',
+      ...ADAPTERS,
       '@draft-tide/engine-client',
       'node:child_process',
       'node:fs',
       'node:fs/promises',
+      'node:net',
+    ]),
+  },
+  {
+    // The only package that runs Git.
+    files: ['packages/git-backend/src/**'],
+    rules: restrict([
+      ...DRIVERS_AND_UI,
+      '@draft-tide/local-store',
+      '@draft-tide/adapter-filesystem',
+      '@draft-tide/engine-client',
+      'node:net',
+    ]),
+  },
+  {
+    // Reads and stages the design folder; never runs Git or anything else.
+    files: ['packages/adapter-filesystem/src/**'],
+    rules: restrict([
+      ...DRIVERS_AND_UI,
+      '@draft-tide/local-store',
+      '@draft-tide/git-backend',
+      '@draft-tide/engine-client',
+      'node:child_process',
       'node:net',
     ]),
   },

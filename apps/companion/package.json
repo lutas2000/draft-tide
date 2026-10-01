@@ -10,9 +10,11 @@
     "cli": "node src/cli/main.ts"
   },
   "dependencies": {
+    "@draft-tide/adapter-filesystem": "workspace:*",
     "@draft-tide/contracts": "workspace:*",
     "@draft-tide/core": "workspace:*",
     "@draft-tide/engine-client": "workspace:*",
+    "@draft-tide/git-backend": "workspace:*",
     "@draft-tide/local-store": "workspace:*",
     "@modelcontextprotocol/sdk": "1.31.0",
     "better-sqlite3": "13.0.3",
