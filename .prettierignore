@@ -1,0 +1,11 @@
+# Prose and specs keep their own hand formatting.
+**/*.md
+.ref/
+docs/
+# Throwaway spike code is frozen as evidence.
+spikes/
+pnpm-lock.yaml
+**/dist/
+**/dist-e2e/
+**/out/
+**/test-results/

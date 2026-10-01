@@ -1,0 +1,16 @@
+{
+  "name": "@draft-tide/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Product use cases and the operation policy. Receives ports; never imports Electron, React, the MCP SDK, SQLite drivers or providers.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@draft-tide/contracts": "workspace:*"
+  }
+}

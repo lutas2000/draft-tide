@@ -1,0 +1,36 @@
+{
+  "name": "draft-tide",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Version history for your designs. Local-first design version control: one Engine, a desktop GUI, a CLI and an MCP server.",
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@12.8.1",
+  "engines": {
+    "node": ">=24.11 <25"
+  },
+  "scripts": {
+    "build": "corepack pnpm -r run build",
+    "typecheck": "corepack pnpm -r run typecheck",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "schemas": "corepack pnpm --filter @draft-tide/contracts run schemas",
+    "check": "corepack pnpm run format:check && corepack pnpm run lint && corepack pnpm run typecheck && corepack pnpm run build && corepack pnpm run test",
+    "desktop": "corepack pnpm --filter @draft-tide/desktop run start",
+    "desktop:dev": "corepack pnpm --filter @draft-tide/desktop run dev"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.19.0",
+    "eslint": "10.11.0",
+    "fast-check": "4.10.2",
+    "globals": "17.13.0",
+    "prettier": "3.9.9",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.0",
+    "vitest": "5.0.3"
+  }
+}

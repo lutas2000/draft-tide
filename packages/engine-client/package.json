@@ -1,0 +1,16 @@
+{
+  "name": "@draft-tide/engine-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local transport to the Engine: runtime paths, length-framed JSON, the handshake, connect-or-start, requests and events. Never opens SQLite or runs Git.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@draft-tide/contracts": "workspace:*"
+  }
+}

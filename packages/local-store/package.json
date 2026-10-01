@@ -1,0 +1,21 @@
+{
+  "name": "@draft-tide/local-store",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The Engine's SQLite state (better-sqlite3, companion Node only): migrations, settings, bindings, and the single-Engine lock.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@draft-tide/contracts": "workspace:*",
+    "@draft-tide/core": "workspace:*",
+    "better-sqlite3": "13.0.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "9.6.0"
+  }
+}

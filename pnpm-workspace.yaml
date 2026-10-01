@@ -1,0 +1,17 @@
+packages:
+  - apps/*
+  - packages/*
+
+# Install scripts run only for these. better-sqlite3 fetches its N-API
+# prebuild, electron downloads its binary, esbuild picks its platform binary.
+allowBuilds:
+  better-sqlite3: true
+  electron: true
+  esbuild: true
+
+minimumReleaseAgeExclude:
+  - '@vitest/mocker@5.0.3'
+  - '@vitest/spy@5.0.3'
+  - globals@17.13.0
+  - vitest@5.0.3
+  - vite@8.3.2
