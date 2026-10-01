@@ -44,7 +44,11 @@ export function findGitOnPath(env: NodeJS.ProcessEnv = process.env): string | nu
 // config, so hooks, fsmonitor, external attribute and ignore files, line-ending
 // conversion, signing and automatic GC can't be switched on by the repo
 // (single-repo spike D1–D4, each checked against a control that fires).
-// Network operations need more than this (an empty git dir, M1-07).
+// Commits are always UTF-8 without an encoding header, and Git refuses paths
+// that some filesystem would take for `.git` on every platform, not only on
+// the one it runs on (protectHFS is off by default outside macOS). Objects,
+// refs and the index Git writes are fsynced. Network operations need more
+// than this (an empty git dir, M1-07).
 export const HARDENING: readonly string[] = [
   '--no-replace-objects',
   '--literal-pathspecs',
@@ -58,11 +62,15 @@ export const HARDENING: readonly string[] = [
     'core.safecrlf=false',
     'core.untrackedCache=false',
     'core.splitIndex=false',
-    'core.fsync=objects,reference',
+    'core.protectHFS=true',
+    'core.protectNTFS=true',
+    'core.fsync=objects,reference,index',
     'gc.auto=0',
     'maintenance.auto=false',
     'commit.gpgSign=false',
     'tag.gpgSign=false',
+    'i18n.commitEncoding=UTF-8',
+    'i18n.logOutputEncoding=UTF-8',
     'protocol.allow=never',
     'transfer.fsckObjects=true',
   ].flatMap((setting) => ['-c', setting]),
@@ -86,6 +94,9 @@ export function gitEnvironment(rt: GitRuntime, extra: Readonly<Record<string, st
     GIT_ATTR_NOSYSTEM: '1',
     GIT_TERMINAL_PROMPT: '0',
     GIT_NO_REPLACE_OBJECTS: '1',
+    // --no-replace-objects leaves `.git/info/grafts` in force, and grafts
+    // rewrite the parents Git reports. History is read from the objects.
+    GIT_GRAFT_FILE: '/dev/null',
     // Set, so it wins over any protocol.*.allow in the repo's config; names no
     // real protocol, so local operations can't reach a transport at all.
     GIT_ALLOW_PROTOCOL: 'none',

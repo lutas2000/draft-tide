@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   mkdirSync,
@@ -58,6 +58,23 @@ export function plainGit(cwd: string, args: string[], input?: string | Buffer): 
     encoding: 'utf8',
     stdio: ['pipe', 'pipe', 'pipe'],
   });
+}
+
+// The user's own Git where failure is the expected outcome (a control, or a
+// command that must be blocked).
+export function plainGitResult(
+  cwd: string,
+  args: string[],
+  input?: string | Buffer,
+): { status: number; stderr: string } {
+  const r = spawnSync('git', args, { cwd, env: plainGitEnv(), input, encoding: 'utf8' });
+  return { status: r.status ?? -1, stderr: r.stderr };
+}
+
+// What `git status` reports, as the user's Git sees it: empty means no staged,
+// unstaged or untracked changes.
+export function gitStatus(root: string): string {
+  return plainGit(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all']);
 }
 
 export function write(root: string, rel: string, content: string | Buffer): void {
