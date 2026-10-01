@@ -2,7 +2,7 @@ import { lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DtError, isSafeRelativePath } from '@draft-tide/contracts';
 import type { Workspace } from '@draft-tide/core';
-import { readProjectConfigFile } from './config-file.ts';
+import { readProjectConfigFile, writeProjectConfigFile } from './config-file.ts';
 import { digestFile } from './digest.ts';
 import { inspectPaths } from './inspect.ts';
 import { volumeSpace } from './space.ts';
@@ -17,6 +17,7 @@ export function openWorkspace(root: string): Workspace {
   return {
     root,
     readProjectConfig: () => readProjectConfigFile(root),
+    writeProjectConfig: (bytes, expected) => writeProjectConfigFile(root, bytes, expected),
     inspect: async (paths, signal) => inspectPaths(root, paths.map(checked), signal),
     hash: async (path, expected, signal) => digestFile(root, checked(path), expected, null, signal),
     stage: async (path, expected, dest, signal) => digestFile(root, checked(path), expected, dest, signal),

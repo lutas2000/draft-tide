@@ -7,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -36,6 +37,7 @@ import {
   openWorkspace,
   readProjectConfigFile,
   volumeSpace,
+  writeProjectConfigFile,
 } from '../src/index.ts';
 
 const onWindows = process.platform === 'win32';
@@ -329,6 +331,69 @@ describe('readProjectConfigFile', () => {
     symlinkSync(join(outside, 'real.json'), join(root, PROJECT_CONFIG_FILE));
     const err = await dtError(readProjectConfigFile(root));
     expect(err.details['reason']).toBe('not-regular-file');
+  });
+});
+
+describe('writeProjectConfigFile', () => {
+  const config: ProjectConfig = {
+    schemaVersion: 1,
+    projectId: ProjectId.parse(randomUUID()),
+    name: 'Landing',
+    entryFiles: ['index.html'],
+    excludeDirNames: [],
+    excludeFilePatterns: [],
+  };
+  const bytes = (c: ProjectConfig) => Buffer.from(serializeProjectConfig(c));
+  const leftovers = (root: string) => readdirSync(root).filter((n) => n.includes('dt-tmp'));
+
+  it('creates the file where there was none, readable like any design file', async () => {
+    const root = tempDir();
+    await writeProjectConfigFile(root, bytes(config), null);
+    expect((await readProjectConfigFile(root))?.config).toEqual(config);
+    if (!onWindows) expect(statSync(join(root, PROJECT_CONFIG_FILE)).mode & 0o777).toBe(0o644);
+    expect(leftovers(root)).toEqual([]);
+  });
+
+  it('replaces the reviewed bytes, keeping the file mode', async () => {
+    const root = tempDir();
+    put(root, PROJECT_CONFIG_FILE, bytes(config));
+    chmodSync(join(root, PROJECT_CONFIG_FILE), 0o664);
+    const next = { ...config, name: 'Renamed' };
+    await writeProjectConfigFile(root, bytes(next), gitBlobOid(bytes(config)));
+    expect((await readProjectConfigFile(root))?.config.name).toBe('Renamed');
+    if (!onWindows) expect(statSync(join(root, PROJECT_CONFIG_FILE)).mode & 0o777).toBe(0o664);
+  });
+
+  it.each([
+    ['appeared since the review', (root: string) => put(root, PROJECT_CONFIG_FILE, bytes(config)), null],
+    ['was edited since the review', (root: string) => put(root, PROJECT_CONFIG_FILE, '{"edited":1}'), 'reviewed'],
+    ['was removed since the review', () => undefined, 'reviewed'],
+    ['is a folder now', (root: string) => mkdirSync(join(root, PROJECT_CONFIG_FILE)), 'reviewed'],
+  ])('refuses with SCOPE_CHANGED when the file %s, writing nothing', async (_name, make, expected) => {
+    const root = tempDir();
+    make(root);
+    const before = existsSync(join(root, PROJECT_CONFIG_FILE))
+      ? lstatSync(join(root, PROJECT_CONFIG_FILE)).mtimeMs
+      : null;
+    const err = await dtError(
+      writeProjectConfigFile(root, bytes(config), expected === null ? null : gitBlobOid(bytes(config))),
+    );
+    expect(err.code).toBe('SCOPE_CHANGED');
+    const after = existsSync(join(root, PROJECT_CONFIG_FILE))
+      ? lstatSync(join(root, PROJECT_CONFIG_FILE)).mtimeMs
+      : null;
+    expect(after).toBe(before);
+    expect(leftovers(root)).toEqual([]);
+  });
+
+  it.skipIf(onWindows)('never writes through a symlink in its place', async () => {
+    const outside = tempDir();
+    put(outside, 'target.json', 'outside');
+    const root = tempDir();
+    symlinkSync(join(outside, 'target.json'), join(root, PROJECT_CONFIG_FILE));
+    const err = await dtError(writeProjectConfigFile(root, bytes(config), gitBlobOid(Buffer.from('outside'))));
+    expect(err.code).toBe('SCOPE_CHANGED');
+    expect(readFileSync(join(outside, 'target.json'), 'utf8')).toBe('outside');
   });
 });
 
