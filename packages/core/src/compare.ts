@@ -103,7 +103,7 @@ export const TEXT_DIFF_BUDGET = {
   // Larger files are shown as a summary.
   maxBytesPerSide: 2 * 1024 * 1024,
   // The diff gives up (too-complex) after this long or this many edits.
-  timeoutMs: 3000,
+  timeoutMs: 1000,
   maxEditLength: 100_000,
   context: 3,
   // Hunks beyond this much JSON are cut (truncated): one control message.
@@ -140,17 +140,12 @@ export function lineEndingsOf(lines: readonly string[]): LineEndings {
   return crlf > 0 ? 'crlf' : 'lf';
 }
 
-function diffLineArrays(
-  a: string[],
-  b: string[],
-): Promise<{ value: string[]; added: boolean; removed: boolean }[] | undefined> {
-  return new Promise((resolve) => {
-    diffArrays(a, b, {
-      timeout: TEXT_DIFF_BUDGET.timeoutMs,
-      maxEditLength: TEXT_DIFF_BUDGET.maxEditLength,
-      callback: (result) => resolve(result),
-    });
-  });
+// Synchronous on purpose: jsdiff's callback mode advances one step of edit
+// distance per timer tick, so rewriting a 600-line file took 0.7 s on macOS
+// and over 3 s on Windows CI, against 1 ms here. The time budget bounds how
+// long the Engine is busy with one diff instead.
+function diffLineArrays(a: string[], b: string[]): { value: string[]; added: boolean; removed: boolean }[] | undefined {
+  return diffArrays(a, b, { timeout: TEXT_DIFF_BUDGET.timeoutMs, maxEditLength: TEXT_DIFF_BUDGET.maxEditLength });
 }
 
 interface Flat {
@@ -242,11 +237,7 @@ export interface DiffSide {
   bytes: Uint8Array | null;
 }
 
-export async function diffFileContent(
-  path: string,
-  before: DiffSide | null,
-  after: DiffSide | null,
-): Promise<FileDiff> {
+export function diffFileContent(path: string, before: DiffSide | null, after: DiffSide | null): FileDiff {
   const summary = (reason: DiffSummaryReason): FileDiff => ({
     kind: 'summary',
     path,
@@ -264,7 +255,7 @@ export async function diffFileContent(
 
   const oldLines = splitLines(oldText);
   const newLines = splitLines(newText);
-  const changes = await diffLineArrays(oldLines, newLines);
+  const changes = diffLineArrays(oldLines, newLines);
   if (!changes) return summary('too-complex');
   const flat: Flat[] = [];
   let added = 0;

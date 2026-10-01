@@ -137,13 +137,13 @@ describe('text decoding and lines', () => {
 });
 
 describe('diffFileContent', () => {
-  it('produces hunks that turn the old text into the new one', async () => {
+  it('produces hunks that turn the old text into the new one', () => {
     const lines = fc.array(fc.constantFrom('a', 'b', 'c', 'd', '', '<div>', '  x'), { maxLength: 40 });
-    await fc.assert(
-      fc.asyncProperty(lines, lines, fc.boolean(), async (a, b, finalBreak) => {
+    fc.assert(
+      fc.property(lines, lines, fc.boolean(), (a, b, finalBreak) => {
         const oldText = a.length ? `${a.join('\n')}\n` : '';
         const newText = b.length ? `${b.join('\n')}${finalBreak ? '\n' : ''}` : '';
-        const d = await diffFileContent('f.txt', side(oldText), side(newText));
+        const d = diffFileContent('f.txt', side(oldText), side(newText));
         if (oldText === newText) {
           expect(d).toMatchObject({ kind: 'summary', reason: 'identical' });
           return;
@@ -163,12 +163,12 @@ describe('diffFileContent', () => {
     );
   });
 
-  it('keeps three lines of context and splits distant changes into hunks', async () => {
+  it('keeps three lines of context and splits distant changes into hunks', () => {
     const before = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
     const after = [...before];
     after[2] = 'changed 3';
     after[25] = 'changed 26';
-    const t = text(await diffFileContent('f', side(`${before.join('\n')}\n`), side(`${after.join('\n')}\n`)));
+    const t = text(diffFileContent('f', side(`${before.join('\n')}\n`), side(`${after.join('\n')}\n`)));
     expect(t.hunks.map((h) => [h.oldStart, h.oldLines, h.newStart, h.newLines])).toEqual([
       [1, 6, 1, 6],
       [23, 7, 23, 7],
@@ -176,46 +176,55 @@ describe('diffFileContent', () => {
     expect(t.hunks[0]?.lines).toEqual([' line 1', ' line 2', '-line 3', '+changed 3', ' line 4', ' line 5', ' line 6']);
   });
 
-  it('shows a CRLF to LF change as a change, with the line endings named', async () => {
-    const t = text(await diffFileContent('f', side('a\r\nb\r\n'), side('a\nb\n')));
+  it('shows a CRLF to LF change as a change, with the line endings named', () => {
+    const t = text(diffFileContent('f', side('a\r\nb\r\n'), side('a\nb\n')));
     expect(t.hunks[0]?.lines).toEqual(['-a\r', '-b\r', '+a', '+b']);
     expect(t.lineEndings).toEqual({ before: 'crlf', after: 'lf' });
   });
 
-  it('notices a final line break that came or went', async () => {
-    const t = text(await diffFileContent('f', side('a\nb'), side('a\nb\n')));
+  it('notices a final line break that came or went', () => {
+    const t = text(diffFileContent('f', side('a\nb'), side('a\nb\n')));
     expect(t.missingFinalNewline).toEqual({ before: true, after: false });
     expect(t.hunks[0]?.lines).toEqual([' a', '-b', '+b']);
   });
 
-  it('diffs an added or a deleted file against nothing', async () => {
-    const added = text(await diffFileContent('f', null, side('x\ny\n')));
+  it('diffs an added or a deleted file against nothing', () => {
+    const added = text(diffFileContent('f', null, side('x\ny\n')));
     expect(added.hunks).toEqual([{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 2, lines: ['+x', '+y'] }]);
     expect(added.before).toBeNull();
-    const deleted = text(await diffFileContent('f', side('x\n'), null));
+    const deleted = text(diffFileContent('f', side('x\n'), null));
     expect(deleted.hunks).toEqual([{ oldStart: 1, oldLines: 1, newStart: 0, newLines: 0, lines: ['-x'] }]);
   });
 
-  it('summarizes what it does not show line by line', async () => {
+  it('summarizes what it does not show line by line', () => {
     const png = Buffer.from('89504e470d0a1a0a00000000', 'hex');
-    expect(await diffFileContent('a.png', side(png), side(Buffer.concat([png, Buffer.from([1])])))).toMatchObject({
+    expect(diffFileContent('a.png', side(png), side(Buffer.concat([png, Buffer.from([1])])))).toMatchObject({
       kind: 'summary',
       reason: 'binary',
     });
     const big = side('x');
-    expect(await diffFileContent('big.js', big && { ...big, bytes: null }, side('y'))).toMatchObject({
+    expect(diffFileContent('big.js', big && { ...big, bytes: null }, side('y'))).toMatchObject({
       reason: 'too-large',
     });
-    expect(await diffFileContent('link', side('target', '120000'), side('other', '120000'))).toMatchObject({
+    expect(diffFileContent('link', side('target', '120000'), side('other', '120000'))).toMatchObject({
       reason: 'not-a-file',
     });
-    expect(await diffFileContent('same', side('x'), side('x'))).toMatchObject({ reason: 'identical' });
+    expect(diffFileContent('same', side('x'), side('x'))).toMatchObject({ reason: 'identical' });
   });
 
-  it('cuts the hunks to the output budget and says so', async () => {
+  it('shows a 1,000-line rewrite line by line, well within the time budget', () => {
+    const before = Array.from({ length: 1000 }, (_, i) => `<p>old ${i}</p>\n`).join('');
+    const after = Array.from({ length: 1000 }, (_, i) => `<p>new ${i}</p>\n`).join('');
+    const started = performance.now();
+    const t = text(diffFileContent('page.html', side(before), side(after)));
+    expect(performance.now() - started).toBeLessThan(TEXT_DIFF_BUDGET.timeoutMs);
+    expect([t.added, t.removed]).toEqual([1000, 1000]);
+  });
+
+  it('cuts the hunks to the output budget and says so', () => {
     const long = 'y'.repeat(2000);
     const lines = Array.from({ length: 600 }, (_, i) => `${i}${long}`);
-    const t = text(await diffFileContent('f', side(''), side(`${lines.join('\n')}\n`)));
+    const t = text(diffFileContent('f', side(''), side(`${lines.join('\n')}\n`)));
     expect(t.added).toBe(600);
     expect(t.truncated).toBe(true);
     // The one long hunk is cut after its last line that fits.
