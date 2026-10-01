@@ -13,11 +13,12 @@ import {
 } from '@draft-tide/contracts';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { authorize, createEngineCore, type LocalStore } from '../src/index.ts';
+import { authorize, createEngineCore, type LocalStore, type ProjectHost } from '../src/index.ts';
 
 // An in-memory stand-in for the SQLite store. Integration tests against the
 // real store live in local-store and the companion.
 function memoryStore(projects: unknown[] = []): LocalStore & { access: AgentAccess } {
+  const list = projects as ProjectSummary[];
   return {
     storageSchemaVersion: 1,
     sqliteVersion: 'test',
@@ -30,10 +31,27 @@ function memoryStore(projects: unknown[] = []): LocalStore & { access: AgentAcce
       return this.access;
     },
     listProjects() {
-      return projects as ProjectSummary[];
+      return list;
     },
+    getProject: (id) => list.find((p) => p.projectId === id) ?? null,
+    findProjectByRoot: (root) => list.find((p) => p.root === root) ?? null,
+    insertProject: (p) => void list.push(p),
+    updateProject: () => undefined,
   };
 }
+
+// No folder is ever opened by these tests.
+const noHost: ProjectHost = {
+  canonicalRoot: () => Promise.reject(new DtError('LOCAL_ROOT_UNAVAILABLE', 'no folders here')),
+  openRepo: () => {
+    throw new Error('not used');
+  },
+  openListingRepo: () => Promise.reject(new Error('not used')),
+  openWorkspace: () => {
+    throw new Error('not used');
+  },
+  createStaging: () => Promise.reject(new Error('not used')),
+};
 
 function setup(projects: unknown[] = []) {
   const store = memoryStore(projects);
@@ -49,6 +67,7 @@ function setup(projects: unknown[] = []) {
       desktopIdentity: 'development',
       runtime: { node: process.version, platform: process.platform, arch: process.arch },
     },
+    host: noHost,
   });
   return { core, store, published };
 }
@@ -148,7 +167,15 @@ describe('engine core', () => {
 
   it('lists per channel what a session may call', () => {
     const { core } = setup();
-    expect(core.operationsFor('cli')).toEqual(['engine.info', 'project.list']);
+    expect(core.operationsFor('cli')).toEqual([
+      'engine.info',
+      'project.list',
+      'project.status',
+      'snapshot.create',
+      'history.list',
+      'snapshot.diff',
+      'snapshot.diffFile',
+    ]);
     expect(core.operationsFor('desktop')).toEqual(OPERATION_NAMES);
   });
 });

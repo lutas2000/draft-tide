@@ -3,6 +3,7 @@ import {
   DEFAULT_EXCLUDE_FILE_PATTERNS,
   DtError,
   PROJECT_CONFIG_FILE,
+  canonicalJson,
   isSafeRelativePath,
   type JsonValue,
   type ProjectConfig,
@@ -12,6 +13,7 @@ import {
   type UnsupportedEntry,
 } from '@draft-tide/contracts';
 import { compareGitPaths, findPathCollisions } from './paths.ts';
+import { sha256Hex } from './text.ts';
 import type {
   ExcludeRules,
   FileIdentity,
@@ -241,6 +243,8 @@ export interface ScopeReview {
   // attributes.
   blockers: RepoBlocker[];
   included: { files: number; bytes: number; largest: { path: string; size: number }[] };
+  // Every included path, in Git order (stays inside the Engine).
+  includedPaths: string[];
   deleted: Excerpt;
   unsupported: { count: number; entries: UnsupportedEntry[] };
   // Everything left out (collapsed to folders where Git can), and the part the
@@ -250,6 +254,26 @@ export interface ScopeReview {
   entryFiles: { path: string; status: EntryFileStatus }[];
   // Pages the user might pick as the entry: included HTML, shallowest first.
   entryCandidates: string[];
+  // Names what was reviewed: the repo's branch and tip, every path in scope
+  // (not its content), the deletions and everything that blocks. Connecting
+  // the folder compares it again (SCOPE_CHANGED).
+  fingerprint: string;
+}
+
+async function reviewFingerprint(
+  probe: RepoProbe,
+  blockers: readonly RepoBlocker[],
+  scan: Pick<ScopeScan, 'files' | 'deleted' | 'unsupported'> | null,
+): Promise<string> {
+  return sha256Hex(
+    canonicalJson({
+      repo: { hasRepo: probe.hasRepo, headRef: probe.headRef, tip: probe.tip },
+      blockers: blockers.map((b) => `${b.code}:${b.reason}`).sort(),
+      included: scan?.files.map((f) => f.path) ?? null,
+      deleted: scan?.deleted ?? null,
+      unsupported: scan?.unsupported.map((u) => `${u.kind}:${u.path}`) ?? null,
+    }),
+  );
 }
 
 const REVIEW_SAMPLE = 50;
@@ -276,14 +300,18 @@ export async function reviewScope(
     probe,
     blockers: probe.blockers,
     included: { files: 0, bytes: 0, largest: [] },
+    includedPaths: [],
     deleted: excerpt([]),
     unsupported: { count: 0, entries: [] },
     excluded: excerpt([]),
     excludedByDefaults: excerpt([]),
     entryFiles: (config?.entryFiles ?? []).map((path) => ({ path, status: 'missing' as const })),
     entryCandidates: [],
+    fingerprint: '',
   };
-  if (probe.blockers.some((b) => b.code === 'REPO_UNSUPPORTED')) return empty;
+  if (probe.blockers.some((b) => b.code === 'REPO_UNSUPPORTED')) {
+    return { ...empty, fingerprint: await reviewFingerprint(probe, probe.blockers, null) };
+  }
 
   const rules = excludeRules(config);
   const scan = await scanScope(repo, workspace, rules, signal);
@@ -314,9 +342,10 @@ export async function reviewScope(
   });
 
   const depth = (p: string) => p.split('/').length;
+  const blockers = [...probe.blockers, ...scan.blockers, ...attrs.blockers, ...(lineEndings ? [lineEndings] : [])];
   return {
     probe,
-    blockers: [...probe.blockers, ...scan.blockers, ...attrs.blockers, ...(lineEndings ? [lineEndings] : [])],
+    blockers,
     included: {
       files: scan.files.length,
       bytes: scan.files.reduce((n, f) => n + f.size, 0),
@@ -325,6 +354,7 @@ export async function reviewScope(
         .slice(0, LARGEST)
         .map((f) => ({ path: f.path, size: f.size })),
     },
+    includedPaths: scan.files.map((f) => f.path),
     deleted: excerpt(scan.deleted),
     unsupported: { count: scan.unsupported.length, entries: scan.unsupported.slice(0, REVIEW_UNSUPPORTED) },
     excluded: excerpt([...excluded.entries, ...excluded.nonUtf8]),
@@ -335,5 +365,6 @@ export async function reviewScope(
       .filter((p) => /\.html?$/i.test(p))
       .sort((a, b) => depth(a) - depth(b) || compareGitPaths(a, b))
       .slice(0, ENTRY_CANDIDATES),
+    fingerprint: await reviewFingerprint(probe, blockers, scan),
   };
 }

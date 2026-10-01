@@ -11,6 +11,7 @@
     "typecheck": "tsc -p ."
   },
   "dependencies": {
-    "@draft-tide/contracts": "workspace:*"
+    "@draft-tide/contracts": "workspace:*",
+    "diff": "9.0.0"
   }
 }

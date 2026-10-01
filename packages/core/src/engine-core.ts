@@ -7,11 +7,13 @@ import {
   isToolChannel,
   type Channel,
   type OperationName,
+  type Origin,
   type OperationOutput,
   type OperationParsedInput,
 } from '@draft-tide/contracts';
 import { authorize } from './policy.ts';
 import type { CorePorts } from './ports.ts';
+import { createProjectService, type ProjectServiceOptions } from './projects.ts';
 
 interface CallContext {
   channel: Channel;
@@ -32,8 +34,14 @@ export interface EngineCore {
   operationsFor(channel: Channel): OperationName[];
 }
 
-export function createEngineCore(ports: CorePorts): EngineCore {
-  const { clock, store, events, identity } = ports;
+const ORIGIN: Record<Channel, Origin> = { desktop: 'gui', cli: 'cli', mcp: 'mcp' };
+
+export function createEngineCore(
+  ports: CorePorts,
+  projectOptions: Omit<ProjectServiceOptions, 'store' | 'host' | 'clock' | 'events'> = {},
+): EngineCore {
+  const { clock, store, events, identity, host } = ports;
+  const projects = createProjectService({ ...projectOptions, store, host, clock, events });
 
   const handlers: Handlers = {
     'engine.info': (_input, ctx) => ({
@@ -48,6 +56,13 @@ export function createEngineCore(ports: CorePorts): EngineCore {
       channel: ctx.channel,
     }),
     'project.list': () => store.listProjects(),
+    'project.review': (input) => projects.review(input.root),
+    'project.bind': (input) => projects.bind(input),
+    'project.status': (input) => projects.status(input.projectId),
+    'snapshot.create': (input, ctx) => projects.save(input.projectId, input.name, ORIGIN[ctx.channel]),
+    'history.list': (input) => projects.history(input.projectId, { skip: input.skip ?? 0, limit: input.limit ?? 50 }),
+    'snapshot.diff': (input) => projects.diff(input.projectId, input.from, input.to),
+    'snapshot.diffFile': (input) => projects.diffFile(input.projectId, input.from, input.to, input.path),
     'agentAccess.get': () => store.getAgentAccess(),
     'agentAccess.set': (input) => {
       const current = store.getAgentAccess();

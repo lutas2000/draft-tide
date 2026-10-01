@@ -6,6 +6,7 @@ import {
   type CaptureStage,
   type JsonValue,
   type ProjectConfig,
+  type ProjectId,
 } from '@draft-tide/contracts';
 import { compareGitPaths, mapLimit } from './paths.ts';
 import type { FileDigest, GitBlobMode, GitOid, GitRepo, RepoProbe, StagingArea, Workspace } from './ports.ts';
@@ -75,6 +76,8 @@ export interface CaptureOptions {
   staging: StagingArea;
   // A probe taken under the project's write guard; its blockers refuse.
   probe: RepoProbe;
+  // The project the folder must belong to: its `.drafttide.json` must name it.
+  projectId?: ProjectId;
   signal?: AbortSignal;
   onProgress?: (progress: CaptureProgress) => void;
   concurrency?: number;
@@ -146,6 +149,11 @@ async function captureAttempt(options: CaptureOptions, attempt: number): Promise
   progress.start('scan', 0, 0);
   const configRead = await workspace.readProjectConfig();
   if (!configRead) throw projectConfigError('missing', 'the project settings file is missing');
+  if (options.projectId !== undefined && configRead.config.projectId !== options.projectId) {
+    throw new DtError('LOCAL_ROOT_UNAVAILABLE', "the folder's .drafttide.json names another project", {
+      reason: 'project-mismatch',
+    });
+  }
   const rules = excludeRules(configRead.config);
   const scan = await scanScope(repo, workspace, rules, signal);
   assertNoBlockers(scan.blockers);
