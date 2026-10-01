@@ -45,8 +45,33 @@ export const ProjectConfig = z.strictObject({
 });
 export type ProjectConfig = z.infer<typeof ProjectConfig>;
 
-function invalid(reason: string, message: string, details: Record<string, string | number | boolean> = {}): never {
-  throw new DtError('CONFIG_INVALID', `${PROJECT_CONFIG_FILE}: ${message}`, { reason, ...details });
+// Stable CONFIG_INVALID reasons. The file checks (`missing`,
+// `not-regular-file`) belong to the filesystem adapter; the rest to the parser.
+export const CONFIG_INVALID_REASONS = [
+  'missing',
+  'not-regular-file',
+  'too-large',
+  'not-json',
+  'not-object',
+  'newer-schema',
+  'schema',
+] as const;
+export type ConfigInvalidReason = (typeof CONFIG_INVALID_REASONS)[number];
+
+export function projectConfigError(
+  reason: ConfigInvalidReason,
+  message: string,
+  details: Record<string, string | number | boolean> = {},
+): DtError {
+  return new DtError('CONFIG_INVALID', `${PROJECT_CONFIG_FILE}: ${message}`, { reason, ...details });
+}
+
+function invalid(
+  reason: ConfigInvalidReason,
+  message: string,
+  details: Record<string, string | number | boolean> = {},
+): never {
+  throw projectConfigError(reason, message, details);
 }
 
 export function parseProjectConfig(bytes: Uint8Array): ProjectConfig {
