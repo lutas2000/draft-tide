@@ -78,6 +78,9 @@ async function tryConnect(dataDir: string, options: ConnectOptions): Promise<Eng
   } catch (e) {
     // Stale discovery from an Engine that is gone: the next one replaces it.
     if (e instanceof DtError && e.code === 'ENGINE_UNAVAILABLE') return null;
+    // Rejected by a newer Engine that replaced the one we read about (our
+    // token was the old one): retry with the current file.
+    if (readDiscovery(paths.discoveryFile)?.instanceId !== discovery.instanceId) return null;
     throw e;
   }
   if (conn.instanceId !== discovery.instanceId) {

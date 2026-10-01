@@ -103,21 +103,25 @@ function writePrivateFile(file: string, body: string): void {
 
 // We hold the lock, so a socket file left here belongs to a dead Engine.
 if (process.platform !== 'win32') rmSync(paths.socket, { force: true });
+// Publish discovery before accepting connections. A client that read the
+// previous Engine's file can then only fail to connect (and retry) or be
+// rejected after this file already names the new instance, never be stuck
+// with a stale token.
+const discovery: Discovery = {
+  pid: process.pid,
+  instanceId,
+  protocolVersion: PROTOCOL_VERSION,
+  socket: paths.socket,
+  toolToken,
+  startedAt,
+};
+writePrivateFile(paths.discoveryFile, JSON.stringify(discovery));
 server.server.on('error', (e) => {
   log(`listen failed: ${e.message}`);
   shutdown('listen failed', 4);
 });
 server.server.listen(paths.socket, () => {
   if (process.platform !== 'win32') chmodSync(paths.socket, 0o600);
-  const discovery: Discovery = {
-    pid: process.pid,
-    instanceId,
-    protocolVersion: PROTOCOL_VERSION,
-    socket: paths.socket,
-    toolToken,
-    startedAt,
-  };
-  writePrivateFile(paths.discoveryFile, JSON.stringify(discovery));
   log(
     `ready: ${BUILD.mode} ${BUILD.appVersion}, node ${process.version}, sqlite ${store.sqliteVersion}, desktop identity ${verifier.mode}`,
   );

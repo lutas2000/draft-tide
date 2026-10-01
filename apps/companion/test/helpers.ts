@@ -53,7 +53,8 @@ export async function stopEngine(dataDir: string): Promise<void> {
 export async function cleanupDataDirs(): Promise<void> {
   for (const d of created.splice(0)) {
     await stopEngine(d);
-    rmSync(d, { recursive: true, force: true });
+    // Windows releases a killed process's file handles a moment later.
+    rmSync(d, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 }
 

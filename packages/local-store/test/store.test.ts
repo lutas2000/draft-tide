@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
 import { DtError } from '@draft-tide/contracts';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -16,7 +16,8 @@ function tempDir(): string {
   return d;
 }
 afterEach(() => {
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  // Windows releases a killed process's file handles a moment later.
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 });
 
 const sha = (f: string) => createHash('sha256').update(readFileSync(f)).digest('hex');
@@ -161,7 +162,7 @@ describe('engine lock', () => {
 
   it('is released by the kernel when the holder is killed', async () => {
     const file = join(tempDir(), 'engine.lock.sqlite');
-    const lockModule = fileURLToPath(new URL('../src/engine-lock.ts', import.meta.url));
+    const lockModule = pathToFileURL(fileURLToPath(new URL('../src/engine-lock.ts', import.meta.url))).href;
     const child = spawn(
       process.execPath,
       [
