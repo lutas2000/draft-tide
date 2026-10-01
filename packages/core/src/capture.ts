@@ -174,13 +174,13 @@ async function captureAttempt(options: CaptureOptions, attempt: number): Promise
   if (lineEndings) assertNoBlockers([lineEndings]);
 
   // 3. Only content Git doesn't have yet needs staging and new objects. A
-  // blob counts as present only when the index references it: gc keeps those,
-  // so the version never depends on a dangling object (TECH_STACK §6.5).
+  // blob counts as present only when the index references it (under any
+  // path, so renames and copies are free): gc keeps those, so the version
+  // never depends on a dangling object (TECH_STACK §6.5).
   const byOid = new Map<GitOid, Hashed>();
   for (const h of hashed) if (!byOid.has(h.digest.oid)) byOid.set(h.digest.oid, h);
-  const indexed = new Set(scan.files.map((f) => f.tracked?.oid));
   const existing = await repo.existingBlobs(
-    [...byOid.keys()].filter((oid) => indexed.has(oid)),
+    [...byOid.keys()].filter((oid) => scan.indexedBlobs.has(oid)),
     signal,
   );
   const fresh = [...byOid.values()].filter((h) => !existing.has(h.digest.oid));

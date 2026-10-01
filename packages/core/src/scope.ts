@@ -16,6 +16,7 @@ import type {
   ExcludeRules,
   FileIdentity,
   GitBlobMode,
+  GitOid,
   GitRepo,
   IndexEntry,
   PathAttributes,
@@ -63,6 +64,10 @@ export interface ScopeScan {
   files: ScopeFile[];
   // Tracked, but gone from disk: the next version deletes them.
   deleted: string[];
+  // Blob ids of every tracked file, present or not: content Git keeps (gc
+  // never prunes what the index references), so a renamed or copied file
+  // needs no new object.
+  indexedBlobs: Set<GitOid>;
   unsupported: UnsupportedEntry[];
   blockers: RepoBlocker[];
 }
@@ -144,7 +149,8 @@ export async function scanScope(
     for (const path of group) unsupported.push({ path, kind: 'path-collision' });
   }
   unsupported.sort((a, b) => compareGitPaths(a.path, b.path) || (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0));
-  return { files, deleted, unsupported, blockers: blockers.list() };
+  const indexedBlobs = new Set([...tracked.values()].map((e) => e.oid));
+  return { files, deleted, indexedBlobs, unsupported, blockers: blockers.list() };
 }
 
 // The executable bit as Git would record it. Where the filesystem can't be
