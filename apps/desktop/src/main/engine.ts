@@ -5,7 +5,16 @@ import type { BridgeEvent, ConnectionState } from '../shared/bridge.ts';
 import { BUILD } from './build-info.ts';
 
 function launch(): EngineLaunch {
-  if (BUILD.companion) return { nodePath: BUILD.companion.nodePath, engineEntry: BUILD.companion.engineEntry };
+  if (BUILD.companion) {
+    // Development and e2e builds may name the Git to run; release builds use
+    // only the bundled one.
+    const git = process.env['DRAFT_TIDE_GIT'];
+    return {
+      nodePath: BUILD.companion.nodePath,
+      engineEntry: BUILD.companion.engineEntry,
+      ...(git ? { env: { DRAFT_TIDE_GIT: git } } : {}),
+    };
+  }
   // Packaged layout (M1-09): the bundled Node and the companion bundle sit in
   // the app's resources, outside the asar.
   return {

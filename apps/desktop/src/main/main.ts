@@ -5,7 +5,7 @@ import './guard.ts';
 import { existsSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { BrowserWindow, app, ipcMain, net, protocol, session, type IpcMainInvokeEvent } from 'electron';
+import { BrowserWindow, app, dialog, ipcMain, net, protocol, session, type IpcMainInvokeEvent } from 'electron';
 import { DtError, OPERATIONS, errorEnvelope, isOperationName } from '@draft-tide/contracts';
 import { IPC, type ConnectionState } from '../shared/bridge.ts';
 import { BUILD } from './build-info.ts';
@@ -49,12 +49,38 @@ function trusted(event: IpcMainInvokeEvent): boolean {
   );
 }
 
+// Folders the user picked in the native dialog during this run. Reviewing or
+// connecting a folder needs one of these: a path typed into the renderer (or
+// injected into it) is never authorization (M1 plan §6.2).
+const chosenFolders = new Set<string>();
+const NEEDS_CHOSEN_FOLDER: ReadonlySet<string> = new Set(['project.review', 'project.bind']);
+
 ipcMain.handle(IPC.invoke, async (event, op: unknown, payload: unknown) => {
   if (!trusted(event)) return errorEnvelope(new DtError('UNAUTHENTICATED', 'untrusted sender'));
   if (typeof op !== 'string' || !isOperationName(op) || !OPERATIONS[op].desktop) {
     return errorEnvelope(new DtError('UNKNOWN_OPERATION', `not an app operation: ${String(op).slice(0, 64)}`));
   }
+  if (NEEDS_CHOSEN_FOLDER.has(op)) {
+    const root = (payload as { root?: unknown } | null)?.root;
+    if (typeof root !== 'string' || !chosenFolders.has(root)) {
+      return errorEnvelope(
+        new DtError('INVALID_ARGUMENT', 'choose the folder in Draft Tide first', { reason: 'folder-not-chosen' }),
+      );
+    }
+  }
   return engine.invoke(op, payload);
+});
+ipcMain.handle(IPC.chooseFolder, async (event) => {
+  if (!trusted(event) || !win) return null;
+  const result = await dialog.showOpenDialog(win, {
+    title: '選擇設計資料夾',
+    buttonLabel: '選擇資料夾',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  const folder = result.canceled ? undefined : result.filePaths[0];
+  if (!folder) return null;
+  chosenFolders.add(folder);
+  return folder;
 });
 ipcMain.handle(IPC.connectionState, (event) => (trusted(event) ? engine.state : null));
 ipcMain.handle(IPC.reconnect, async (event) => {

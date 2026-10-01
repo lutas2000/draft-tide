@@ -1,19 +1,35 @@
 import { useState } from 'react';
-import { AppShell, type Screen } from './components/app-shell.tsx';
+import { AppShell } from './components/app-shell.tsx';
 import { useEngineConnection } from './lib/engine-state.ts';
+import type { Route } from './lib/route.ts';
 import { AccountScreen } from './screens/account.tsx';
+import { CompareScreen } from './screens/compare.tsx';
+import { ProjectScreen } from './screens/project.tsx';
 import { ProjectsScreen } from './screens/projects.tsx';
+import { ReviewScreen } from './screens/review.tsx';
 import { SettingsScreen } from './screens/settings.tsx';
 
 export function App() {
-  const [screen, setScreen] = useState<Screen>('projects');
+  const [route, setRoute] = useState<Route>({ name: 'home' });
   const { state, retry } = useEngineConnection();
 
   return (
-    <AppShell screen={screen} onNavigate={setScreen} connection={state} onRetry={retry}>
-      {screen === 'projects' && <ProjectsScreen />}
-      {screen === 'account' && <AccountScreen />}
-      {screen === 'settings' && <SettingsScreen connection={state} />}
+    <AppShell route={route} onNavigate={setRoute} connection={state} onRetry={retry}>
+      {route.name === 'home' && <ProjectsScreen navigate={setRoute} />}
+      {route.name === 'review' && <ReviewScreen key={route.root} root={route.root} navigate={setRoute} />}
+      {route.name === 'project' && (
+        <ProjectScreen
+          key={route.projectId}
+          projectId={route.projectId}
+          navigate={setRoute}
+          {...(route.notice ? { notice: route.notice } : {})}
+        />
+      )}
+      {route.name === 'compare' && (
+        <CompareScreen projectId={route.projectId} from={route.from} to={route.to} navigate={setRoute} />
+      )}
+      {route.name === 'account' && <AccountScreen />}
+      {route.name === 'settings' && <SettingsScreen connection={state} />}
     </AppShell>
   );
 }

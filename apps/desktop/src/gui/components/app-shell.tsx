@@ -1,16 +1,22 @@
 import type { ReactNode } from 'react';
 import type { ConnectionState } from '../../shared/bridge.ts';
 import { cn } from '../lib/cn.ts';
+import type { Route } from '../lib/route.ts';
 import { Alert, Cloud, Gear, Layers, TideMark } from './icons.tsx';
 import { Button } from './ui/button.tsx';
 
-export type Screen = 'projects' | 'account' | 'settings';
+type Section = 'projects' | 'account' | 'settings';
 
-const NAV: { screen: Screen; label: string; icon: ReactNode }[] = [
-  { screen: 'projects', label: '專案', icon: <Layers /> },
-  { screen: 'account', label: '帳號與同步', icon: <Cloud /> },
-  { screen: 'settings', label: '設定與診斷', icon: <Gear /> },
+const NAV: { section: Section; route: Route; label: string; icon: ReactNode }[] = [
+  { section: 'projects', route: { name: 'home' }, label: '專案', icon: <Layers /> },
+  { section: 'account', route: { name: 'account' }, label: '帳號與同步', icon: <Cloud /> },
+  { section: 'settings', route: { name: 'settings' }, label: '設定與診斷', icon: <Gear /> },
 ];
+
+function sectionOf(route: Route): Section {
+  if (route.name === 'account' || route.name === 'settings') return route.name;
+  return 'projects';
+}
 
 function ConnectionDot({ state }: { state: ConnectionState }) {
   const [tone, label] =
@@ -28,14 +34,14 @@ function ConnectionDot({ state }: { state: ConnectionState }) {
 }
 
 export function AppShell({
-  screen,
+  route,
   onNavigate,
   connection,
   onRetry,
   children,
 }: {
-  screen: Screen;
-  onNavigate: (screen: Screen) => void;
+  route: Route;
+  onNavigate: (route: Route) => void;
   connection: ConnectionState;
   onRetry: () => void;
   children: ReactNode;
@@ -45,7 +51,7 @@ export function AppShell({
       <header className="flex h-header shrink-0 items-center gap-6 border-b border-line bg-surface px-5">
         <button
           type="button"
-          onClick={() => onNavigate('projects')}
+          onClick={() => onNavigate({ name: 'home' })}
           className="flex items-center gap-2 rounded-md py-1 pr-2 text-[15px] font-semibold tracking-tight text-ink"
           aria-label="Draft Tide：專案"
         >
@@ -55,12 +61,12 @@ export function AppShell({
         <nav aria-label="主要" className="flex items-center gap-1">
           {NAV.map((item) => (
             <Button
-              key={item.screen}
+              key={item.section}
               variant="ghost"
               size="sm"
-              aria-current={screen === item.screen ? 'page' : undefined}
-              className={cn(screen === item.screen && 'bg-sunken text-ink')}
-              onClick={() => onNavigate(item.screen)}
+              aria-current={sectionOf(route) === item.section ? 'page' : undefined}
+              className={cn(sectionOf(route) === item.section && 'bg-sunken text-ink')}
+              onClick={() => onNavigate(item.route)}
             >
               {item.icon}
               {item.label}

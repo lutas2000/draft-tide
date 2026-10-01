@@ -93,3 +93,87 @@ export const Agent = (p: IconProps) => (
     <circle cx="14.5" cy="13.5" r=".9" fill="currentColor" />
   </Icon>
 );
+
+export const ChevronLeft = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M14.5 6l-6 6 6 6" />
+  </Icon>
+);
+
+export const ChevronDown = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M6 9.5l6 6 6-6" />
+  </Icon>
+);
+
+export const Check = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M5 12.5l4.5 4.5L19 7.5" />
+  </Icon>
+);
+
+export const Dot = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="4" fill="currentColor" stroke="none" />
+  </Icon>
+);
+
+export const Save = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M5 4.5h11l3.5 3.5v11.5a1 1 0 0 1-1 1h-13.5a1 1 0 0 1-1-1V5.5a1 1 0 0 1 1-1z" />
+    <path d="M8 4.5v5h7v-5" />
+    <path d="M8 20v-6h8v6" />
+  </Icon>
+);
+
+export const Columns = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="3.5" y="4.5" width="17" height="15" rx="1.5" />
+    <path d="M12 4.5v15" />
+  </Icon>
+);
+
+export const FileIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M6.5 3.5h7l4 4v12a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1z" />
+    <path d="M13.5 3.5v4h4" />
+  </Icon>
+);
+
+export const Branch = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="7" cy="6" r="2" />
+    <circle cx="7" cy="18" r="2" />
+    <circle cx="17" cy="8" r="2" />
+    <path d="M7 8v8" />
+    <path d="M17 10c0 4-10 2-10 6" />
+  </Icon>
+);
+
+export const Person = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="12" cy="8.5" r="3.5" />
+    <path d="M5 19.5c1.2-3.3 3.8-5 7-5s5.8 1.7 7 5" />
+  </Icon>
+);
+
+export const Info = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="8.5" />
+    <path d="M12 11v5" />
+    <path d="M12 8h.01" />
+  </Icon>
+);
+
+export const Spinner = ({ className = 'size-4' }: { className?: string }) => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className={`${className} animate-spin`}>
+    <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" strokeOpacity=".25" strokeWidth="2.5" />
+    <path
+      d="M20.5 12a8.5 8.5 0 0 0-8.5-8.5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+    />
+  </svg>
+);
