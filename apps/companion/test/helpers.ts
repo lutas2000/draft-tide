@@ -1,0 +1,129 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { connect, type Socket } from 'node:net';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Discovery, type Channel } from '@draft-tide/contracts';
+import {
+  FrameDecoder,
+  connectEngine,
+  encodeFrame,
+  runtimePaths,
+  type EngineConnection,
+} from '@draft-tide/engine-client';
+
+export const COMPANION = join(dirname(fileURLToPath(import.meta.url)), '..');
+export const ENGINE_SOURCE = join(COMPANION, 'src', 'engine', 'main.ts');
+export const CLI_SOURCE = join(COMPANION, 'src', 'cli', 'main.ts');
+
+const created: string[] = [];
+
+export function tempDataDir(): string {
+  const d = mkdtempSync(join(tmpdir(), 'dt-eng-'));
+  created.push(d);
+  return d;
+}
+
+export function readDiscovery(dataDir: string): Discovery | null {
+  try {
+    return Discovery.parse(JSON.parse(readFileSync(runtimePaths(dataDir).discoveryFile, 'utf8')));
+  } catch {
+    return null;
+  }
+}
+
+export async function stopEngine(dataDir: string): Promise<void> {
+  const d = readDiscovery(dataDir);
+  if (!d) return;
+  try {
+    process.kill(d.pid, 'SIGTERM');
+  } catch {
+    return;
+  }
+  for (let i = 0; i < 100; i++) {
+    try {
+      process.kill(d.pid, 0);
+    } catch {
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
+export async function cleanupDataDirs(): Promise<void> {
+  for (const d of created.splice(0)) {
+    await stopEngine(d);
+    rmSync(d, { recursive: true, force: true });
+  }
+}
+
+export function connectTo(dataDir: string, channel: Channel, idleMs = 2_000): Promise<EngineConnection> {
+  return connectEngine({
+    channel,
+    dataDir,
+    client: { name: 'test', version: '0' },
+    launch: {
+      nodePath: process.execPath,
+      engineEntry: ENGINE_SOURCE,
+      env: { DRAFT_TIDE_ENGINE_IDLE_MS: String(idleMs) },
+    },
+  });
+}
+
+// A hand-driven connection for protocol-level tests.
+export class RawClient {
+  readonly socket: Socket;
+  readonly #decoder = new FrameDecoder();
+  readonly #queue: unknown[] = [];
+  readonly #waiters: ((m: unknown) => void)[] = [];
+  closed = false;
+
+  private constructor(socket: Socket) {
+    this.socket = socket;
+    socket.on('data', (chunk: Buffer) => {
+      for (const m of this.#decoder.push(chunk)) {
+        const w = this.#waiters.shift();
+        if (w) w(m);
+        else this.#queue.push(m);
+      }
+    });
+    socket.on('close', () => {
+      this.closed = true;
+      for (const w of this.#waiters.splice(0)) w({ type: 'closed' });
+    });
+    socket.on('error', () => undefined);
+  }
+
+  static open(socketPath: string): Promise<RawClient> {
+    return new Promise((resolve, reject) => {
+      const s = connect(socketPath);
+      s.once('connect', () => resolve(new RawClient(s)));
+      s.once('error', reject);
+    });
+  }
+
+  send(message: unknown): void {
+    this.socket.write(encodeFrame(message));
+  }
+
+  next(timeoutMs = 3_000): Promise<Record<string, unknown>> {
+    const queued = this.#queue.shift();
+    if (queued !== undefined) return Promise.resolve(queued as Record<string, unknown>);
+    if (this.closed) return Promise.resolve({ type: 'closed' });
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('no message in time')), timeoutMs);
+      this.#waiters.push((m) => {
+        clearTimeout(timer);
+        resolve(m as Record<string, unknown>);
+      });
+    });
+  }
+}
+
+export const hello = (channel: Channel, extra: Record<string, unknown> = {}) => ({
+  type: 'hello',
+  protocolVersion: 1,
+  channel,
+  client: { name: 'raw', version: '0' },
+  ...extra,
+});

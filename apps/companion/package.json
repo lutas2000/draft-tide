@@ -1,0 +1,25 @@
+{
+  "name": "@draft-tide/companion",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runs on the bundled Node: the Engine (only writer), the draft-tide CLI and the MCP stdio server.",
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "build": "node scripts/build.ts",
+    "cli": "node src/cli/main.ts"
+  },
+  "dependencies": {
+    "@draft-tide/contracts": "workspace:*",
+    "@draft-tide/core": "workspace:*",
+    "@draft-tide/engine-client": "workspace:*",
+    "@draft-tide/local-store": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.31.0",
+    "better-sqlite3": "13.0.3",
+    "commander": "15.0.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}
