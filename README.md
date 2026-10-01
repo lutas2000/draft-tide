@@ -14,7 +14,7 @@ Draft Tide is intended to work without an agent, model API key, cloud account, o
 
 ## Status
 
-Early development toward the first local alpha (v0.1). The contracts, the local Engine with its CLI and MCP entry points, and a desktop app skeleton exist. Saving and restoring designs are not built yet.
+Early development toward the first local alpha (v0.1). The contracts, the local Engine with its CLI and MCP entry points, a desktop app skeleton, and the scope rules and file capture that saving builds on exist. Saving and restoring designs are not available yet.
 
 ## Development
 
