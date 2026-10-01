@@ -17,7 +17,7 @@ import type { GitOutput, RunOptions } from './process.ts';
 // its config carries. Index-level checks (unmerged entries, gitlinks,
 // skip-worktree) and attribute checks happen with the scope scan.
 
-type Run = (args: string[], options?: RunOptions) => Promise<GitOutput>;
+export type Run = (args: string[], options?: RunOptions) => Promise<GitOutput>;
 
 // Keys that can make Git run a program or send traffic elsewhere. Draft Tide
 // never honors them; the warning lets the user know the repo carries them.
@@ -197,15 +197,24 @@ export async function probeRepo(root: string, run: Run, signal?: AbortSignal): P
     unsupported('detached-head');
     return probe({ trustExecutableBit });
   }
-  const refs = await run(['for-each-ref', '--format=%(refname)%00%(objectname)%00%(objecttype)', headRef], { signal });
+  const tip = await readBranchTip(run, headRef, signal);
+  return probe({ headRef, branch: headRef.slice('refs/heads/'.length), tip, trustExecutableBit });
+}
+
+// The commit a branch points at, or null while it is unborn.
+export async function readBranchTip(run: Run, ref: string, signal?: AbortSignal): Promise<string | null> {
+  if (!isBranchRef(ref)) throw new DtError('INTERNAL_ERROR', 'not a branch ref');
+  // for-each-ref matches whole path components from the start, so the exact
+  // name is picked out below.
+  const refs = await run(['for-each-ref', '--format=%(refname)%00%(objectname)%00%(objecttype)', ref], { signal });
   let tip: string | null = null;
   for (const line of refs.stdout.toString('utf8').split('\n')) {
     const [name, oid, type] = line.split('\0');
-    if (name !== headRef) continue;
+    if (name !== ref) continue;
     if (type !== 'commit' || !oid || !/^[0-9a-f]{40}$/.test(oid)) {
       throw new DtError('GIT_FAILED', 'the current branch does not point at a commit');
     }
     tip = oid;
   }
-  return probe({ headRef, branch: headRef.slice('refs/heads/'.length), tip, trustExecutableBit });
+  return tip;
 }

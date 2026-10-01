@@ -1,3 +1,4 @@
+export * from './history.ts';
 export * from './probe.ts';
 export * from './process.ts';
 export * from './repo.ts';

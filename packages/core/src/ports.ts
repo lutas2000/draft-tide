@@ -1,9 +1,11 @@
 import type {
   AgentAccess,
+  CommitIdentity,
   DesktopIdentityMode,
   EngineEvent,
   EngineInstanceId,
   IsoTimestamp,
+  OperationId,
   ProjectConfig,
   ProjectSummary,
   RepoBlocker,
@@ -52,9 +54,8 @@ export interface CorePorts {
 
 // ---- Git: the project's own repo (implemented by @draft-tide/git-backend)
 //
-// Named, read-only operations for scope and capture. Writes (objects, index,
-// refs) arrive with M1-03. Paths are project-relative with `/` separators,
-// exactly as Git reports them.
+// Named, read-only operations for scope and capture. Paths are
+// project-relative with `/` separators, exactly as Git reports them.
 
 // A Git object id. SHA-256 repositories are refused, so always 40 hex chars.
 export type GitOid = string;
@@ -126,6 +127,115 @@ export interface GitRepo {
   // The subset of these blob ids already in the object store.
   existingBlobs(oids: readonly GitOid[], signal?: AbortSignal): Promise<Set<GitOid>>;
 }
+
+// ---- Git: objects, the index and the branch ref (implemented by @draft-tide/git-backend)
+//
+// Writing a version (M1 plan §7.1 steps 6–8) and reading history back. Only
+// these named operations exist: no revision expressions, no passthrough. Ids
+// are full 40-character object ids, checked before they reach Git.
+
+export interface TreeEntryInput {
+  path: string;
+  mode: GitBlobMode;
+  oid: GitOid;
+}
+
+export interface GitPerson {
+  name: string;
+  email: string;
+  // Seconds since the epoch, and the offset as Git records it (+0800).
+  time: number;
+  offset: string;
+}
+
+export interface GitCommit {
+  oid: GitOid;
+  tree: GitOid;
+  parents: GitOid[];
+  author: GitPerson;
+  committer: GitPerson;
+  // UTF-8, lossily decoded. Cut short when the commit object is very large
+  // (truncated); Draft Tide's own commits are always small.
+  message: string;
+  truncated: boolean;
+}
+
+// What `ls-tree -r` reports: blobs (files, and symlinks as 120000) and
+// gitlinks (commit). Sizes are known for blobs only.
+export interface GitTreeEntry {
+  path: string;
+  mode: string;
+  type: 'blob' | 'commit';
+  oid: GitOid;
+  size: number | null;
+}
+
+// `.git/index.lock`: free, held by a Draft Tide operation (its content names
+// the operation), or held by some other Git.
+export type IndexLockState =
+  { held: false } | { held: true; by: 'draft-tide'; operationId: OperationId } | { held: true; by: 'other' };
+
+// The lock-first switch of ref and index (M1 plan §9.3.1). The index for the
+// new tree was prepared under the same operation id.
+export interface PublishRequest {
+  operationId: OperationId;
+  // refs/heads/<branch>, the branch HEAD points at.
+  ref: string;
+  // Compare-and-swap: the tip the version was built on (null: unborn branch).
+  expectedOld: GitOid | null;
+  commit: GitOid;
+  reflogMessage: string;
+  // How long to wait for another Git to release `.git/index.lock` before
+  // failing with LOCKED. Git itself doesn't wait; a short wait rides out an
+  // editor's background `git status`.
+  lockWaitMs?: number;
+}
+
+export interface GitHistory {
+  // `git init` for a plain folder: empty template (no hooks), branch `main`.
+  init(signal?: AbortSignal): Promise<void>;
+
+  // Writes these files' bytes as blobs, unfiltered, in order. onWritten
+  // reports each one as Git finishes it.
+  writeBlobs(files: readonly string[], onWritten?: (index: number) => void, signal?: AbortSignal): Promise<GitOid[]>;
+  // Builds the operation's temporary index (inside `.git`, next to the real
+  // one) holding exactly these entries, and writes its tree. Refuses entries
+  // whose objects are missing, and paths Git would drop.
+  prepareIndex(operationId: OperationId, entries: readonly TreeEntryInput[], signal?: AbortSignal): Promise<GitOid>;
+  // The same for an existing tree (restore and recovery).
+  prepareIndexFromTree(operationId: OperationId, tree: GitOid, signal?: AbortSignal): Promise<void>;
+  discardPreparedIndex(operationId: OperationId): Promise<void>;
+  createCommit(
+    input: { tree: GitOid; parents: readonly GitOid[]; message: string; identity: CommitIdentity; time: IsoTimestamp },
+    signal?: AbortSignal,
+  ): Promise<GitOid>;
+  // Takes `.git/index.lock` (LOCKED if another Git holds it), moves the ref
+  // with compare-and-swap (HISTORY_CHANGED if it moved), renames the prepared
+  // index in and releases the lock. Before the ref moves, a failure undoes
+  // everything; after it, the lock stays and RECOVERY_REQUIRED is thrown.
+  publish(request: PublishRequest): Promise<void>;
+  // Completes a publish whose ref already moved: renames the prepared index in
+  // (if it is still there) and releases this operation's lock. Only for a
+  // branch whose tip is still that operation's commit.
+  finishPublish(operationId: OperationId): Promise<void>;
+  indexLock(): Promise<IndexLockState>;
+  // Releases `.git/index.lock` only if this operation holds it.
+  releaseIndexLock(operationId: OperationId): Promise<void>;
+  readRef(ref: string, signal?: AbortSignal): Promise<GitOid | null>;
+
+  readCommits(oids: readonly GitOid[], signal?: AbortSignal): Promise<GitCommit[]>;
+  // The first-parent line from tip, newest first.
+  firstParentLine(tip: GitOid, page: { skip: number; limit: number }, signal?: AbortSignal): Promise<GitOid[]>;
+  // Every file of a tree (or a commit's tree), recursively, in Git order.
+  listTree(treeish: GitOid, signal?: AbortSignal): Promise<GitListing<GitTreeEntry>>;
+  lookupPath(tree: GitOid, path: string, signal?: AbortSignal): Promise<GitTreeEntry | null>;
+  // The raw bytes of a blob, streamed; ending the iteration early stops Git.
+  streamBlob(oid: GitOid, signal?: AbortSignal): AsyncIterable<Uint8Array>;
+  isAncestor(ancestor: GitOid, descendant: GitOid, signal?: AbortSignal): Promise<boolean>;
+}
+
+// The design repo, as git-backend opens it.
+export type ProjectGit = GitRepo & GitHistory;
 
 // ---- Filesystem: the bound folder (implemented by @draft-tide/adapter-filesystem)
 

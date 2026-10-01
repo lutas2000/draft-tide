@@ -245,6 +245,7 @@ describe('hardening (each with a control that shows the setting is live)', () =>
         'GIT_ATTR_NOSYSTEM',
         'GIT_CONFIG_GLOBAL',
         'GIT_CONFIG_NOSYSTEM',
+        'GIT_GRAFT_FILE',
         'GIT_NO_LAZY_FETCH',
         'GIT_NO_REPLACE_OBJECTS',
         'GIT_OPTIONAL_LOCKS',

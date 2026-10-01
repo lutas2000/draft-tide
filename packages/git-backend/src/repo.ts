@@ -3,15 +3,18 @@ import { join } from 'node:path';
 import { DtError } from '@draft-tide/contracts';
 import type {
   ExcludeRules,
+  GitHistory,
   GitListing,
   GitOid,
   GitRepo,
   IndexEntry,
   PathAttributes,
+  ProjectGit,
   RepoProbe,
 } from '@draft-tide/core';
+import { createHistory, type HistoryTestHooks } from './history.ts';
 import { probeRepo } from './probe.ts';
-import { runGit, type GitOutput, type RunOptions } from './process.ts';
+import { runGit, streamGit, type GitOutput, type RunOptions } from './process.ts';
 import { HARDENING, type GitRuntime } from './runtime.ts';
 
 export const OID_PATTERN = /^[0-9a-f]{40}$/;
@@ -36,17 +39,59 @@ function excludeArgs(rules: ExcludeRules): string[] {
 export interface OpenGitRepoOptions {
   // For a folder without `.git` (scope review before `git init`): an empty
   // git dir elsewhere, so listings see the folder's .gitignore files without
-  // anything being written into the folder. See createScratchGitDir.
+  // anything being written into the folder. See createScratchGitDir. Such a
+  // repo only lists: every history operation refuses.
   scratchGitDir?: string;
+  // Tests only: pause or fail at a point inside publishing.
+  testHooks?: HistoryTestHooks;
+}
+
+// History operations of a repo opened on a scratch git dir: refused, so
+// nothing can ever be written to a git dir that isn't the project's.
+function refusingHistory(): GitHistory {
+  const refuse = (): never => {
+    throw new DtError('INTERNAL_ERROR', 'a scratch git dir only lists the folder');
+  };
+  const all: Record<keyof GitHistory, () => never> = {
+    init: refuse,
+    writeBlobs: refuse,
+    prepareIndex: refuse,
+    prepareIndexFromTree: refuse,
+    discardPreparedIndex: refuse,
+    createCommit: refuse,
+    publish: refuse,
+    finishPublish: refuse,
+    indexLock: refuse,
+    releaseIndexLock: refuse,
+    readRef: refuse,
+    readCommits: refuse,
+    firstParentLine: refuse,
+    listTree: refuse,
+    lookupPath: refuse,
+    streamBlob: refuse,
+    isAncestor: refuse,
+  };
+  return all;
 }
 
 // One design repo: explicit --git-dir and --work-tree (no discovery), the
 // hardening on every call, the folder as cwd so Git reports root-relative
 // paths. Only named operations; there is no way to pass arbitrary arguments.
-export function openGitRepo(rt: GitRuntime, root: string, options: OpenGitRepoOptions = {}): GitRepo {
+export function openGitRepo(rt: GitRuntime, root: string, options: OpenGitRepoOptions = {}): ProjectGit {
   const gitDir = options.scratchGitDir ?? join(root, '.git');
+  const prefix = [`--git-dir=${gitDir}`, `--work-tree=${root}`, ...HARDENING];
   const run = (args: string[], opts: RunOptions = {}): Promise<GitOutput> =>
-    runGit(rt, [`--git-dir=${gitDir}`, `--work-tree=${root}`, ...HARDENING, ...args], root, opts);
+    runGit(rt, [...prefix, ...args], root, opts);
+  const history = options.scratchGitDir
+    ? refusingHistory()
+    : createHistory({
+        rt,
+        root,
+        gitDir,
+        run,
+        stream: (args, signal) => streamGit(rt, [...prefix, ...args], root, { signal }),
+        hooks: options.testHooks,
+      });
 
   async function listPaths(args: string[], signal?: AbortSignal): Promise<GitListing<string>> {
     const entries: string[] = [];
@@ -63,7 +108,7 @@ export function openGitRepo(rt: GitRuntime, root: string, options: OpenGitRepoOp
     return { entries, nonUtf8 };
   }
 
-  return {
+  const scope: GitRepo = {
     root,
 
     probe(signal?: AbortSignal): Promise<RepoProbe> {
@@ -188,6 +233,7 @@ export function openGitRepo(rt: GitRuntime, root: string, options: OpenGitRepoOp
       return found;
     },
   };
+  return { ...scope, ...history };
 }
 
 // An empty git dir for listing a folder that has no `.git` yet. The caller

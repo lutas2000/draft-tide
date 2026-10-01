@@ -6,7 +6,7 @@ import { ErrorInfo, JsonValue } from './errors.ts';
 import { ProjectConfig } from './project-config.ts';
 import { ClientMessage, Discovery, EngineMessage } from './protocol.ts';
 import { CaptureProgress, RepoBlocker, RepoWarning, UnsupportedEntry } from './scope.ts';
-import { SnapshotMetadata } from './snapshot.ts';
+import { CommitIdentity, SaveProgress, SnapshotMetadata } from './snapshot.ts';
 
 // Every schema published as JSON Schema, by file name. Each operation exports
 // its input and its result envelope.
@@ -26,6 +26,8 @@ export function publicSchemas(): Record<string, z.ZodType> {
     'repo-warning': RepoWarning,
     'unsupported-entry': UnsupportedEntry,
     'capture-progress': CaptureProgress,
+    'save-progress': SaveProgress,
+    'commit-identity': CommitIdentity,
   };
   for (const name of Object.keys(OPERATIONS) as OperationName[]) {
     const spec = OPERATIONS[name];
