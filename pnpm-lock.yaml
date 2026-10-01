@@ -196,6 +196,9 @@ importers:
 
   apps/companion:
     dependencies:
+      '@draft-tide/adapter-filesystem':
+        specifier: workspace:*
+        version: link:../../packages/adapter-filesystem
       '@draft-tide/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -205,6 +208,9 @@ importers:
       '@draft-tide/engine-client':
         specifier: workspace:*
         version: link:../../packages/engine-client
+      '@draft-tide/git-backend':
+        specifier: workspace:*
+        version: link:../../packages/git-backend
       '@draft-tide/local-store':
         specifier: workspace:*
         version: link:../../packages/local-store
@@ -283,6 +289,15 @@ importers:
         specifier: 8.3.2
         version: 8.3.2(@types/node@24.19.0)(esbuild@0.28.2)(jiti@2.7.0)
 
+  packages/adapter-filesystem:
+    dependencies:
+      '@draft-tide/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@draft-tide/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/contracts:
     dependencies:
       zod:
@@ -300,6 +315,15 @@ importers:
       '@draft-tide/contracts':
         specifier: workspace:*
         version: link:../contracts
+
+  packages/git-backend:
+    dependencies:
+      '@draft-tide/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@draft-tide/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/local-store:
     dependencies:

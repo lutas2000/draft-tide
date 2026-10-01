@@ -7,5 +7,6 @@ export * from './ids.ts';
 export * from './operation.ts';
 export * from './project-config.ts';
 export * from './protocol.ts';
+export * from './scope.ts';
 export * from './snapshot.ts';
 export * from './text.ts';

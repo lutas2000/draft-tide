@@ -1,0 +1,17 @@
+{
+  "name": "@draft-tide/adapter-filesystem",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The bound folder on disk: canonical roots, parent-directory checks, the project settings file, streaming hashes and immutable staging, free space. Never runs Git.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@draft-tide/contracts": "workspace:*",
+    "@draft-tide/core": "workspace:*"
+  }
+}

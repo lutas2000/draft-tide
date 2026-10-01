@@ -1,0 +1,17 @@
+{
+  "name": "@draft-tide/git-backend",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The project's own Git repo through the bundled Git: a hardened process runner and named operations only (probe, scope listings, attributes; objects, index and refs from M1-03). No passthrough, no porcelain.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@draft-tide/contracts": "workspace:*",
+    "@draft-tide/core": "workspace:*"
+  }
+}
