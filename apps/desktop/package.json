@@ -1,0 +1,38 @@
+{
+  "name": "@draft-tide/desktop",
+  "productName": "Draft Tide",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The Draft Tide desktop app: Electron Main (guarded), a restricted preload and the React GUI.",
+  "main": "dist/main/main.mjs",
+  "scripts": {
+    "typecheck": "tsc -p . && tsc -p tsconfig.gui.json",
+    "build": "node scripts/build.ts",
+    "start": "node scripts/build.ts && electron .",
+    "dev": "node scripts/dev.ts",
+    "test:e2e": "node scripts/build.ts --e2e && vitest run --config vitest.e2e.config.ts"
+  },
+  "dependencies": {
+    "@draft-tide/contracts": "workspace:*",
+    "@draft-tide/engine-client": "workspace:*",
+    "@tanstack/react-query": "5.104.0",
+    "clsx": "2.1.1",
+    "radix-ui": "1.6.7",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "tailwind-merge": "3.7.0"
+  },
+  "devDependencies": {
+    "@draft-tide/companion": "workspace:*",
+    "@tailwindcss/vite": "4.3.3",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "electron": "44.5.1",
+    "esbuild": "0.28.2",
+    "playwright-core": "1.63.0",
+    "tailwindcss": "4.3.3",
+    "vite": "8.3.2"
+  }
+}

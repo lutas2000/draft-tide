@@ -4,7 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Draft Tide ("Version history for your designs") is a local-first design version control tool for designers. It is **pre-implementation**. M0 feasibility work has been done, but M1 has not started: there is no root `package.json` or pnpm workspace and no product code under `apps/` or `packages/`. Don't invent commands. Once the workspace exists, read the real scripts from `package.json`.
+Draft Tide ("Version history for your designs") is a local-first design version control tool for designers. **M1 is in progress.** M1-01 (contracts, Engine and app skeleton) is in place: a pnpm workspace with `packages/{contracts,core,local-store,engine-client}` and `apps/{companion,desktop}`. Nothing binds a folder or saves yet; that starts with M1-02. What M1-01 built, its decisions, results and known limits are in `docs/m1-01-skeleton.md`. M1-00 still has open items (GitHub sign-in flow and token type, token custody, a real GitHub round trip, measuring the full Git build). They block M1-07 and M1-09, not the local work packages.
+
+Commands (the real scripts are in the `package.json` files; pnpm comes from Corepack):
+- `corepack pnpm install`, then `corepack pnpm run check`: format check, lint (with the module-boundary rules), typecheck, build, and the unit and integration tests.
+- `corepack pnpm --filter @draft-tide/desktop run test:e2e`: the Electron GUI E2E (Playwright), macOS.
+- `corepack pnpm run desktop`: build and launch the app. `desktop:dev` serves the GUI from Vite.
+- `node apps/companion/dist/cli.mjs --json engine info`: the CLI, after a build.
+- `DRAFT_TIDE_DATA_DIR` points every component at another data store, and each store gets its own Engine. `DRAFT_TIDE_ENGINE_IDLE_MS` shortens the idle exit.
 
 - `spikes/m0/` holds **throwaway** M0 spike code: `core/`, `gui/` and `desktop/`, each a standalone pnpm package run through `corepack pnpm`. Commands are in `spikes/m0/README.md`. Don't grow it into M1, and don't import from it; copy ideas deliberately. It was built on the older design (a separate bare repo per project, backup/import), so its storage code and the GUI prototype's backup/import screens are superseded for M1.
 - `spikes/single-repo/` is a second **throwaway** spike (48 checks) that validated the design now adopted: history lives in the project's own Git repo and syncs to GitHub. Same rules: don't grow it into M1, don't import from it. Run it with the commands in its README.
@@ -19,9 +26,9 @@ The specs live in `.ref/`, which is **gitignored and local-only**. They are writ
 
 Read the relevant section before implementing anything. When a product or safety contract changes, update all three main docs together (the docs require this), then this file. Everything in them is a proposal, not an existing feature.
 
-## Planned stack and toolchain
+## Stack and toolchain
 
-TypeScript strict (`noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`) with ESM sources. The rest of the stack:
+TypeScript strict (`noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`) with ESM sources. TypeScript is pinned to 6.0.x because typescript-eslint supports only `<6.1` (the spikes used 7). Sources import with explicit `.ts` extensions and use only erasable syntax, so Node 24 runs them directly; workspace packages export their `src/index.ts`. Dependencies are pinned to exact versions. The rest of the stack:
 - Desktop: Electron with a React + Vite GUI, shadcn/ui, Tailwind and TanStack Query.
 - Runtimes: the Engine, CLI and MCP server run on a **bundled Node LTS companion**, not on Electron's Node.
 - Storage: SQLite through better-sqlite3, Zod for contracts (exported to JSON Schema, with branded IDs), and Commander for the CLI.
@@ -46,7 +53,9 @@ Skill guides external agents to CLI/MCP              ├ git-backend (the projec
                                                      └ preview supervisor → isolated Preview Host
 ```
 
-Planned layout: `apps/desktop`, `apps/companion`, `packages/{contracts,core,git-backend,adapter-filesystem,local-store,remote-github,engine-client}`, `skills/draft-tide/SKILL.md`, `fixtures/`, `docs/`. Split out a package only when publishing or isolation needs it (`remote-github` can start inside the companion).
+Layout: `apps/desktop`, `apps/companion`, `packages/{contracts,core,git-backend,adapter-filesystem,local-store,remote-github,engine-client}`, `skills/draft-tide/SKILL.md`, `fixtures/`, `docs/`. Those not yet created are `git-backend` and `adapter-filesystem` (M1-02/03), `remote-github` (M1-07), the Skill (M1-08) and `fixtures/`. Split out a package only when publishing or isolation needs it (`remote-github` can start inside the companion).
+
+**The operation catalog** (`packages/contracts/src/catalog.ts`) is the one list of Engine operations. It defines each operation's input and output schemas, whether the desktop is offered it, the tool-channel access (`always` / `agent-access` / `none`) and its effect. The Engine dispatcher, `authorize()` in core, the CLI, the MCP tools and the GUI's typed bridge all follow from it. A new operation starts there. Inputs are strict objects, so self-asserted flags (`confirmed`, `force`) are rejected as `INVALID_ARGUMENT`.
 
 Invariants that span modules:
 - **Single writer.** The Engine is the only process that writes design data or SQLite. It is started on demand, and a cross-process startup lock plus handshake keeps it to one Engine per data store. Per-project write guards serialize writes. GUI, CLI and MCP never open the DB, never run a writable core in-process, and never shell out to Git.
@@ -60,6 +69,10 @@ Invariants that span modules:
     - **Every Mach-O.** Team-signed, with hardened runtime and no `get-task-allow`. Native addons are team-signed, so library validation admits only the team's code.
     - **Main.** It refuses `remote-debugging-*`, `inspect*` and `js-flags` before anything else; hardened runtime doesn't stop CDP. The fuses stay.
     - **Every companion process.** It runs with `--disable-sigusr1`; hardened runtime doesn't stop that either.
+  - **Per build.**
+    - **Release.** The requirement is compiled into the Engine bundle (`apps/companion/scripts/build.ts`). No environment variable, argument or file can set or relax it. Without the addon, or off macOS, a release Engine refuses every desktop connection rather than check less.
+    - **Development.** The signature check is skipped, and `engine.info` reports `desktopIdentity: "development"`. On macOS the instance is still pinned through the addon.
+    - **E2E.** Only the E2E desktop build (`dist-e2e/`) lets Main accept debugging switches, for Playwright. It is never shipped.
   - **Open.** Token custody, because any script on the companion Node carries its signature, so an Engine on it can't be verified by signature (a Node SEA Engine is the candidate). Windows is unverified.
 - **Where truth lives.** The project's own Git repo (the project folder's `.git`) owns history and raw bytes. It is a *design repo*: Draft Tide manages it, engineers only read it. Every snapshot is a full-tree commit on the checked-out branch, and metadata goes in canonical JSON inside the commit message. Project identity and settings (projectId, entry files, extra excludes) live in `.drafttide.json` at the repo root, inside the tree, and are **untrusted input** (strict schema, `CONFIG_INVALID` on anything unsafe). SQLite owns local bindings, remote bindings, plans, the agent-access setting, the operation journal and the sync queue; it is **not a cache**. Only the history index, diffs, preview metadata and thumbnails are rebuildable. No LFS, no second asset store, and no second copy of history (no app-data bare repo, no backup container).
 - **Draft Tide manages the design repo, within limits.** It may change only: the checked-out branch's ref (compare-and-swap on the expected old OID), the index (under `index.lock`), planned working files, `.drafttide.json`, temp index files and objects inside `.git`, and `refs/remotes/draft-tide/*`; `remote.origin.*` only after the user confirms connecting a remote. It never rewrites history (no rebase, reset or force-push), never calls the porcelain commands checkout, stash, clean, merge, add, commit, status or diff (plumbing only, e.g. commit-tree), never runs the repo's hooks, filters, textconv or configured programs, never signs, and leaves the user's other branches, tags, stash, config and hooks alone. It refuses repo forms it cannot handle safely (shallow, linked worktree, submodule, LFS, detached HEAD, merge or rebase in progress, `text`/`eol` attributes on files with CR…) before writing anything.
@@ -76,7 +89,10 @@ Invariants that span modules:
 - **Commit identity.** The signed-in GitHub user's display name with their `ID+USERNAME@users.noreply.github.com` address; before sign-in a fixed "Draft Tide" identity; never the private email or the global Git identity. Draft Tide's commits run no hooks and are unsigned (accepted): an engineer's pre-commit formatter does not apply to saves, and a remote rule that requires signatures makes the push fail with `REMOTE_REJECTED`.
 - **No fixed quotas.** Don't cap project size, file size, file count or version count. Use bounded streams, disk-space preflight, progress and recoverable errors. Diff and preview budgets must never exclude original files from a save. A remote's limits (GitHub blocks files over 100 MiB) only affect pushing and never block saving.
 - **Preview isolation.** The Preview Host is a separate process with a sandboxed, context-isolated renderer, no Node or preload, an ephemeral session, and a custom protocol with an allowlist (no `file://`). Network is blocked. A failed preview never undoes a save. Screenshots live only in the local rebuildable cache, never in the design repo. Capture control (viewport emulation, full-page shots) uses in-process CDP through `webContents.debugger` inside the Preview Host, never a remote-debugging port; Playwright is a dev/CI tool only.
-- **Machine output.** CLI and MCP stdout carry protocol data only; diagnostics go to stderr. Use the JSON envelope `{schemaVersion, ok, data, warnings, error{code,message,details,retryable}}`, with stable error codes defined once in `contracts` (see M1 plan §11.1).
+- **Machine output.** CLI and MCP stdout carry protocol data only; diagnostics go to stderr. Use the JSON envelope `{schemaVersion, ok, data, warnings, error{code,message,details,retryable}}`, with stable error codes defined once in `contracts` (see M1 plan §11.1). With `--json` the CLI prints exactly one envelope line.
+  - **Exit codes** come from the envelope: 0 ok, 1 failed, 2 usage (`INVALID_ARGUMENT`), 3 no-op (`NO_CHANGES`).
+  - **MCP `isError`** is set for failures but not for a no-op.
+  - **Non-`DtError` exceptions** surface as `INTERNAL_ERROR`.
 - **Commit metadata** must never include absolute paths, prompts, keys, the GitHub token or Engine connection tokens. The only personal data is the display name and noreply address of the commit identity.
 
 ## Product rules that shape code

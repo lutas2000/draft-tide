@@ -1,0 +1,11 @@
+{
+  // Root config for files outside the packages (eslint.config.js,
+  // vitest.config.ts). Each package type-checks itself with `tsc -p`.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "allowJs": true,
+    "checkJs": false
+  },
+  "include": ["eslint.config.js", "vitest.config.ts"]
+}

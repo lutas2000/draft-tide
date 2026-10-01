@@ -1,7 +1,7 @@
 #!/bin/bash
-# Prepares Claude Code on the web sessions: Node 24 (the spikes need >=24.11 <25)
-# plus the M0 spike dependencies. spikes/single-repo reuses m0/core's toolchain.
-# Replace the install steps once the M1 pnpm workspace exists.
+# Prepares Claude Code on the web sessions: Node 24 (the workspace needs
+# >=24.11 <25) plus the M1 pnpm workspace. The throwaway spikes keep their own
+# installs (see each spike's README); they are not set up here.
 set -euo pipefail
 
 if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
@@ -23,6 +23,5 @@ if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
 fi
 
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-for dir in spikes/m0/core spikes/m0/gui; do
-  (cd "$CLAUDE_PROJECT_DIR/$dir" && corepack pnpm install >&2)
-done
+# No desktop GUI in a web session: skip the Electron binary download.
+(cd "$CLAUDE_PROJECT_DIR" && ELECTRON_SKIP_BINARY_DOWNLOAD=1 corepack pnpm install >&2)

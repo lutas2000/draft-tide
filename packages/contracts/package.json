@@ -1,0 +1,18 @@
+{
+  "name": "@draft-tide/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Versioned DTOs, branded IDs, error codes, the Engine protocol and the operation catalog. Pure Zod; runs in Node and in the GUI.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "build": "node scripts/gen-schemas.ts",
+    "schemas": "node scripts/gen-schemas.ts"
+  },
+  "dependencies": {
+    "zod": "4.6.5"
+  }
+}
