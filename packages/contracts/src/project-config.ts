@@ -12,13 +12,27 @@ export const PROJECT_CONFIG_FILE = '.drafttide.json';
 export const PROJECT_CONFIG_SCHEMA_VERSION = 1;
 export const MAX_PROJECT_CONFIG_BYTES = 64 * 1024;
 
+// Code points HFS+ ignores when it compares names (Git's next_hfs_char).
+const HFS_IGNORABLE = /[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/gu;
+
+// A segment some filesystem would resolve to `.git`: in any case, with HFS+
+// ignorable characters inside (macOS), or as an NTFS alias (trailing dots or
+// spaces, an alternate data stream, the 8.3 short name `git~1`). Git refuses
+// these paths (core.protectHFS / core.protectNTFS) and `update-index` drops
+// them with only a message on stderr, so they are refused here first. Case is
+// folded for ASCII only, as Git does.
+function isDotGitAlias(seg: string): boolean {
+  return /^\.git$/i.test(seg.replace(HFS_IGNORABLE, '')) || /^(?:\.git|git~1)[. ]*(?::.*)?$/i.test(seg);
+}
+
 // A project-relative path with `/` separators: no absolute or drive paths, no
-// backslashes, no empty, `.` or `..` segments, nothing under `.git`.
+// backslashes, no empty, `.` or `..` segments, nothing under `.git` or a name
+// a filesystem would take for it.
 export function isSafeRelativePath(p: string): boolean {
   if (p.length === 0 || p.length > 1024) return false;
   if (!p.isWellFormed() || !isSingleLine(p) || p.includes('\\')) return false;
   if (p.startsWith('/') || /^[A-Za-z]:/.test(p)) return false;
-  return p.split('/').every((seg) => seg !== '' && seg !== '.' && seg !== '..' && seg.toLowerCase() !== '.git');
+  return p.split('/').every((seg) => seg !== '' && seg !== '.' && seg !== '..' && !isDotGitAlias(seg));
 }
 
 export const RelativePath = z.string().refine(isSafeRelativePath, 'must be a safe project-relative path');
