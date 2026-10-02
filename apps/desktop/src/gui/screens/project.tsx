@@ -1,29 +1,67 @@
 import { useEffect, useId, useState } from 'react';
 import {
   DtError,
+  type Activity,
   type HistoryEntry,
   type ProjectId,
   type ProjectStatus,
+  type RestoreResult,
   type SavedSnapshot,
   type StatusChange,
 } from '@draft-tide/contracts';
-import { Agent, Alert, Branch, Check, ChevronLeft, Columns, Dot, Folder, Person, Save } from '../components/icons.tsx';
-import { SaveProgressLine } from '../components/progress.tsx';
+import {
+  Agent,
+  Alert,
+  Branch,
+  Check,
+  ChevronLeft,
+  Columns,
+  Dot,
+  Folder,
+  Person,
+  Save,
+  Undo,
+} from '../components/icons.tsx';
+import { ProgressLine } from '../components/progress.tsx';
 import { Badge, type BadgeTone } from '../components/ui/badge.tsx';
 import { Button } from '../components/ui/button.tsx';
 import { Card } from '../components/ui/card.tsx';
 import { Details } from '../components/ui/details.tsx';
 import { Dialog } from '../components/ui/dialog.tsx';
 import { cn } from '../lib/cn.ts';
-import { ENTRY_KIND_COPY, FOLDER_STATE_COPY, KIND_LABEL, ORIGIN_LABEL, blockerCopy } from '../lib/copy.ts';
-import { useHistory, useOperationProgress, useProjectStatus, useSave } from '../lib/engine-state.ts';
-import { entryTime, entryTitle, formatFull, formatWhen, versionLabel } from '../lib/format.ts';
+import {
+  ENTRY_KIND_COPY,
+  FOLDER_STATE_COPY,
+  KIND_LABEL,
+  ORIGIN_LABEL,
+  activityText,
+  blockerCopy,
+} from '../lib/copy.ts';
+import {
+  useHistory,
+  useOperationProgress,
+  useProjectStatus,
+  useRecoveryReport,
+  useRestoreSettings,
+  useSave,
+  type ProgressEvent,
+} from '../lib/engine-state.ts';
+import { entryTime, entryTitle, formatFull, formatWhen, refLabel, versionLabel } from '../lib/format.ts';
 import type { Navigate, Route } from '../lib/route.ts';
 import { ErrorNote } from './error-note.tsx';
+import { RecoveryCard, type Recovered } from './recovery-card.tsx';
+import { RestoreDialog } from './restore-dialog.tsx';
 
 // A connected project (M1 plan §4.1 版本歷史): what changed since the newest
-// version, saving, and the branch's history, including other tools' commits
-// shown as external changes.
+// version, saving, restoring a version, recovering an operation that stopped
+// part-way, and the branch's history, including other tools' commits shown as
+// external changes.
+
+const ACTIVITY_OF: Record<ProgressEvent['operation'], Activity> = {
+  'snapshot.create': 'saving',
+  'restore.apply': 'restoring',
+  'recovery.apply': 'recovering',
+};
 
 const KIND_TONE: Record<string, BadgeTone> = {
   baseline: 'tide',
@@ -75,9 +113,22 @@ export function ProjectScreen({
   const history = useHistory(projectId);
   const [selected, setSelected] = useState<string | null>(null);
   const [pending, setPending] = useState(notice ?? null);
+  // The version being restored (the dialog lives here, so a history refresh
+  // that remounts the side panel never interrupts it), and the last outcomes.
+  const [restoring, setRestoring] = useState<HistoryEntry | null>(null);
+  const [restored, setRestored] = useState<{ result: RestoreResult; target: string } | null>(null);
+  const [recovered, setRecovered] = useState<Recovered | null>(null);
 
   const entries = history.data?.pages.flatMap((p) => p.entries) ?? [];
   const current = entries.find((e) => e.commit === selected) ?? entries[0] ?? null;
+  const available = status.data?.folder === 'available';
+
+  // Saving waits only for items the user must decide; Draft Tide completes
+  // the others itself before the next change. Recovery needs the folder and
+  // its history, not its settings file.
+  const recoveryNeeded = status.data?.recoveryRequired === true;
+  const recovery = useRecoveryReport(projectId, recoveryNeeded);
+  const recoveryBlocks = recoveryNeeded && (!recovery.data || recovery.data.items.some((i) => !i.automatic));
 
   // Another tool may have committed (an engineer, an agent's own git): when
   // the branch's tip moves, the history is read again.
@@ -126,7 +177,26 @@ export function ProjectScreen({
               <ErrorNote error={DtError.fromInfo(pending)} />
             </div>
           )}
+          {restored && (
+            <RestoredNote
+              result={restored.result}
+              target={restored.target}
+              entries={entries}
+              onShowProtection={(commit) => setSelected(commit)}
+            />
+          )}
+          {recovered && <RecoveredNote outcome={recovered} />}
 
+          {recoveryNeeded && (
+            <RecoveryCard
+              projectId={projectId}
+              entries={entries}
+              onRecovered={(outcome) => {
+                setRestored(null);
+                setRecovered(outcome);
+              }}
+            />
+          )}
           {status.isError ? (
             <ErrorNote error={status.error} />
           ) : status.isPending ? (
@@ -136,10 +206,16 @@ export function ProjectScreen({
           ) : (
             <StatusCard
               status={status.data}
-              onSaved={() => setPending(null)}
+              recoveryBlocks={recoveryBlocks}
+              onSaved={() => {
+                setPending(null);
+                setRestored(null);
+                setRecovered(null);
+              }}
               onRecheck={() => {
                 void status.refetch();
                 void history.refetch();
+                if (recoveryNeeded) void recovery.refetch();
               }}
               rechecking={status.isFetching}
             />
@@ -214,8 +290,119 @@ export function ProjectScreen({
           entry={current}
           entries={entries}
           onCompare={(from, to) => navigate({ name: 'compare', projectId, from: refOf(from), to: refOf(to) })}
+          onRestore={
+            available
+              ? () => {
+                  setSelected(current.commit);
+                  setRestoring(current);
+                }
+              : null
+          }
         />
       )}
+      {restoring && (
+        <RestoreDialog
+          projectId={projectId}
+          entry={restoring}
+          target={refOf(restoring)}
+          onClose={() => setRestoring(null)}
+          onRestored={(result) => {
+            setRestoring(null);
+            setPending(null);
+            setRecovered(null);
+            setRestored({ result, target: versionLabel(restoring) ?? `「${entryTitle(restoring)}」` });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// A restore is shown as done only from the Engine's answer. The protection
+// version's number appears once the history is read again.
+function RestoredNote({
+  result,
+  target,
+  entries,
+  onShowProtection,
+}: {
+  result: RestoreResult;
+  // How the target was named when the restore started (V3, or an external
+  // change's title).
+  target: string;
+  entries: HistoryEntry[];
+  onShowProtection: (commit: string) => void;
+}) {
+  const shown = entries.find((e) => e.commit === result.target.commit);
+  const targetLabel = (shown && versionLabel(shown)) ?? target;
+  const protection = result.protection;
+  return (
+    <div className="flex items-center gap-3 rounded-md bg-ok-soft px-3 py-2 text-[13px] text-ok" role="status">
+      <Check className="size-4 shrink-0" />
+      <div className="min-w-0 flex-1">
+        <p>
+          已回復到 {targetLabel}。
+          {protection
+            ? `回復前的內容保存在 ${refLabel(entries, protection)}（回復前保護）。`
+            : '回復前沒有未保存的變更，不需要回復前保護版本。'}
+        </p>
+        <p className="text-[12px] text-ink-2">
+          寫入 {result.written} 個檔案、刪除 {result.deleted} 個。原本開著這些檔案的工具可能需要重新載入。
+        </p>
+      </div>
+      {protection && (
+        <Button size="sm" variant="secondary" onClick={() => onShowProtection(protection.commit)}>
+          查看回復前保護版本
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function RecoveredNote({ outcome }: { outcome: Recovered }) {
+  const { item, strategy, result } = outcome;
+  const conflicts = result.conflicts;
+  const recorded = result.operation?.kind === 'restore' && result.operation.restored !== null;
+  const done =
+    item.kind === 'lock' && strategy === 'rollback'
+      ? '已移除 Draft Tide 留下的鎖。'
+      : item.automatic
+        ? '已完成。'
+        : strategy === 'finish'
+          ? item.kind === 'restore'
+            ? `已完成回復。${recorded ? '回復版本已記錄在歷史中。' : ''}`
+            : '已完成。'
+          : item.kind === 'restore'
+            ? '已還原成回復前的內容。'
+            : '已還原。';
+  return (
+    <div
+      className={cn(
+        'flex items-start gap-3 rounded-md px-3 py-2 text-[13px]',
+        conflicts.count > 0 ? 'bg-warn-soft text-warn' : 'bg-ok-soft text-ok',
+      )}
+      role="status"
+    >
+      {conflicts.count > 0 ? (
+        <Alert className="mt-0.5 size-4 shrink-0" />
+      ) : (
+        <Check className="mt-0.5 size-4 shrink-0" />
+      )}
+      <div className="min-w-0 flex-1">
+        <p>
+          {done}
+          {result.written + result.deleted > 0 && `寫入 ${result.written} 個檔案、刪除 ${result.deleted} 個。`}
+        </p>
+        {conflicts.count > 0 && (
+          <p className="text-ink-2">
+            其他程式改過的 {conflicts.count} 個檔案保持原樣：
+            <span className="font-mono text-[12px]">
+              {conflicts.sample.slice(0, 5).join('、')}
+              {conflicts.count > 5 ? '…' : ''}
+            </span>
+          </p>
+        )}
+      </div>
     </div>
   );
 }
@@ -264,26 +451,26 @@ function HistoryRow({ entry, selected, onSelect }: { entry: HistoryEntry; select
   );
 }
 
-function StatusCard({
+// The folder, its history or its settings can't be used. A missing
+// settings file can be put back from the newest version: only while it is
+// absent, so nothing is overwritten.
+function FolderStateCard({
   status,
-  onSaved,
   onRecheck,
   rechecking,
 }: {
   status: ProjectStatus;
-  onSaved: () => void;
   onRecheck: () => void;
   rechecking: boolean;
 }) {
-  const [open, setOpen] = useState(false);
-  const [result, setResult] = useState<{ saved: SavedSnapshot } | { error: unknown } | null>(null);
-  const progress = useOperationProgress(status.project.projectId);
-  const saving = status.saving || progress !== null;
-
-  if (status.folder !== 'available') {
-    const copy = FOLDER_STATE_COPY[status.folder];
-    return (
-      <Card className="flex items-start gap-4 border-warn-line px-5 py-4">
+  const restoreSettings = useRestoreSettings(status.project.projectId);
+  const copy = FOLDER_STATE_COPY[status.folder as Exclude<ProjectStatus['folder'], 'available'>];
+  const error = restoreSettings.error;
+  const noneInVersion =
+    error instanceof DtError && error.code === 'CONFIG_INVALID' && error.details['reason'] === 'missing';
+  return (
+    <Card className="border-warn-line px-5 py-4">
+      <div className="flex items-start gap-4">
         <span className="grid size-9 shrink-0 place-items-center rounded-full bg-warn-soft text-warn">
           <Alert />
         </span>
@@ -294,15 +481,59 @@ function StatusCard({
             <p className="mt-1 font-mono text-[12px] text-ink-3">{status.project.root}</p>
           )}
         </div>
-        <Button variant="ghost" size="sm" onClick={onRecheck} disabled={rechecking}>
+        {status.folder === 'config-missing' && status.tip !== null && (
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => restoreSettings.mutate()}
+            disabled={restoreSettings.isPending || rechecking}
+          >
+            {restoreSettings.isPending ? '放回中…' : '從最新版本放回設定檔'}
+          </Button>
+        )}
+        <Button variant="ghost" size="sm" onClick={onRecheck} disabled={rechecking || restoreSettings.isPending}>
           {rechecking ? '檢查中…' : '重新檢查'}
         </Button>
-      </Card>
-    );
+      </div>
+      {noneInVersion ? (
+        <p className="mt-3 rounded-md bg-warn-soft px-3 py-2 text-[13px] text-warn" role="alert">
+          最新的版本裡也沒有專案設定檔，無法放回。請從其他複本找回這個檔案，或用 git 取回它。
+        </p>
+      ) : (
+        error !== null && <ErrorNote className="mt-3" error={error} />
+      )}
+    </Card>
+  );
+}
+
+function StatusCard({
+  status,
+  recoveryBlocks,
+  onSaved,
+  onRecheck,
+  rechecking,
+}: {
+  status: ProjectStatus;
+  recoveryBlocks: boolean;
+  onSaved: () => void;
+  onRecheck: () => void;
+  rechecking: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [result, setResult] = useState<{ saved: SavedSnapshot } | { error: unknown } | null>(null);
+  const progress = useOperationProgress(status.project.projectId);
+  // The Engine's events are newer than the last status read.
+  const active = progress
+    ? { activity: ACTIVITY_OF[progress.operation], origin: progress.origin }
+    : status.activeOperation;
+  const busy = active !== null;
+
+  if (status.folder !== 'available') {
+    return <FolderStateCard status={status} onRecheck={onRecheck} rechecking={rechecking} />;
   }
 
   const changes = status.changes;
-  const blocked = status.blockers.length > 0 || status.unsupported.count > 0 || status.recoveryRequired;
+  const blocked = status.blockers.length > 0 || status.unsupported.count > 0 || recoveryBlocks;
   const noVersions = status.tip === null;
   const dirty = changes !== null && changes.total > 0;
   return (
@@ -342,7 +573,7 @@ function StatusCard({
             </>
           )}
         </div>
-        <Button variant="ghost" size="sm" onClick={onRecheck} disabled={rechecking || saving}>
+        <Button variant="ghost" size="sm" onClick={onRecheck} disabled={rechecking || busy}>
           {rechecking ? '檢查中…' : '重新檢查'}
         </Button>
         <Button
@@ -351,28 +582,17 @@ function StatusCard({
             setResult(null);
             setOpen(true);
           }}
-          disabled={saving || blocked}
+          disabled={busy || blocked}
         >
           <Save />
           保存版本
         </Button>
       </div>
 
-      {saving && (
+      {active && (
         <div className="mt-3 border-t border-line pt-3">
-          <SaveProgressLine
-            event={progress}
-            fallback={
-              progress?.origin && progress.origin !== 'gui' ? `${ORIGIN_LABEL[progress.origin]} 正在保存…` : '保存中…'
-            }
-          />
+          <ProgressLine event={progress} fallback={activityText(active.activity, active.origin)} />
         </div>
-      )}
-      {status.recoveryRequired && (
-        <p className="mt-3 flex items-start gap-2 rounded-md bg-warn-soft px-3 py-2 text-[13px] text-warn">
-          <Alert className="mt-0.5 size-4 shrink-0" />
-          上一次的保存沒有完成最後一步，版本已在歷史中。請勿手動刪除 .git/index.lock；完成恢復的功能會在後續版本提供。
-        </p>
       )}
       {status.blockers.length > 0 && (
         <ul className="mt-3 flex flex-col gap-2">
@@ -527,7 +747,7 @@ function SaveDialog({
             <strong className="text-ink">{changed} 個檔案有變更</strong>。沒有變動的檔案沿用上一版，不會重複佔用空間。
           </p>
         )}
-        {save.isPending && <SaveProgressLine event={progress} />}
+        {save.isPending && <ProgressLine event={progress} fallback="保存中…" />}
         <button type="submit" hidden />
       </form>
     </Dialog>
@@ -538,10 +758,13 @@ function VersionPanel({
   entry,
   entries,
   onCompare,
+  onRestore,
 }: {
   entry: HistoryEntry;
   entries: HistoryEntry[];
   onCompare: (from: HistoryEntry, to: HistoryEntry) => void;
+  // null while the folder can't be written (missing, no settings…).
+  onRestore: (() => void) | null;
 }) {
   const index = entries.findIndex((e) => e.commit === entry.commit);
   const older = index >= 0 ? entries[index + 1] : undefined;
@@ -550,6 +773,10 @@ function VersionPanel({
   const label = versionLabel(entry);
   const when = entryTime(entry);
   const copyOf = entry.copyOf ? entries.find((e) => e.commit === entry.copyOf) : undefined;
+  const restoreOf =
+    entry.snapshot?.kind === 'restore' && entry.snapshot.restoreOf
+      ? entries.find((e) => e.snapshot?.snapshotId === entry.snapshot?.restoreOf)
+      : undefined;
 
   return (
     <aside
@@ -574,6 +801,18 @@ function VersionPanel({
           <Agent className="mt-0.5 size-4 shrink-0 text-agent" />
           外部 agent 經 {ORIGIN_LABEL[entry.snapshot.origin]} 請求保存了這個版本。這只表示「有人請求保存」，不代表 agent
           的任務已完成或設計已確認。
+        </p>
+      )}
+      {entry.source === 'draft-tide' && entry.snapshot?.kind === 'pre-restore' && (
+        <p className="rounded-md bg-warn-soft px-3 py-2 text-[12px] text-ink-2">
+          回復之前，資料夾裡還沒保存的內容被保存成這個版本，所以不會遺失。可以比較它，或回復到它。
+        </p>
+      )}
+      {entry.source === 'draft-tide' && entry.snapshot?.kind === 'restore' && (
+        <p className="rounded-md bg-ok-soft px-3 py-2 text-[12px] text-ink-2">
+          這個版本把資料夾回復成
+          {restoreOf ? ` ${versionLabel(restoreOf) ?? ''}「${entryTitle(restoreOf)}」` : '較早一個版本'}
+          的內容（經 {ORIGIN_LABEL[entry.snapshot.origin]}）。歷史只會增加，之前的版本都還在。
         </p>
       )}
       {entry.source === 'external' && (
@@ -609,6 +848,12 @@ function VersionPanel({
           <Button onClick={() => onCompare(entry, newest)}>
             <Columns />
             與最新的一筆比較
+          </Button>
+        )}
+        {onRestore && (
+          <Button onClick={onRestore}>
+            <Undo />
+            回復到此版
           </Button>
         )}
       </div>

@@ -51,6 +51,9 @@ export const ERROR_CATALOG = {
   // Added by M1-04
   PROJECT_ALREADY_BOUND: { retryable: false },
   SNAPSHOT_NOT_FOUND: { retryable: false },
+  // Added by M1-05: stopped at a safe boundary because the caller cancelled;
+  // nothing was changed by the part that didn't run.
+  CANCELLED: { retryable: false },
 } as const satisfies Record<string, { retryable: boolean; noop?: true }>;
 
 export type ErrorCode = keyof typeof ERROR_CATALOG;

@@ -6,6 +6,12 @@ import type {
   EngineInstanceId,
   IsoTimestamp,
   OperationId,
+  OperationJournal,
+  OperationKind,
+  OperationState,
+  Origin,
+  PlanId,
+  PlanRecord,
   ProjectConfig,
   ProjectId,
   ProjectSummary,
@@ -36,6 +42,80 @@ export interface LocalStore {
   findProjectByRoot(root: string): ProjectSummary | null;
   insertProject(project: ProjectSummary): void;
   updateProject(projectId: ProjectId, changes: { root?: string; name?: string }): void;
+
+  // The operation journal (TECH_STACK §6.4). Rows are written before the
+  // step they describe, so recovery never has to guess.
+  insertOperation(op: OperationRecord): void;
+  // Compare-and-set: changes the row only while its state is one of
+  // `expect`, and says whether it did.
+  updateOperation(
+    operationId: OperationId,
+    expect: readonly OperationState[],
+    change: { state: OperationState; journal: OperationJournal; at: IsoTimestamp },
+  ): boolean;
+  getOperation(operationId: OperationId): OperationRecord | null;
+  listOperations(query: OperationQuery): OperationRecord[];
+  acknowledgeOperation(operationId: OperationId): void;
+  // A restore's planned file changes, written in one transaction.
+  insertOperationFiles(operationId: OperationId, files: readonly OperationFile[]): void;
+  listOperationFiles(operationId: OperationId): OperationFile[];
+  markOperationFile(operationId: OperationId, seq: number, done: boolean): void;
+  // Plans wait for their apply here.
+  insertPlan(plan: StoredPlan): void;
+  getPlan(planId: PlanId): StoredPlan | null;
+  // Consumes the plan and, in the same transaction, inserts the operation it
+  // starts (when given). false when the plan was already used.
+  consumePlan(planId: PlanId, by: OperationId, at: IsoTimestamp, start?: OperationRecord): boolean;
+  // Ended operations and plans older than this go; unfinished ones never do.
+  prune(before: IsoTimestamp): void;
+}
+
+export interface OperationRecord {
+  operationId: OperationId;
+  projectId: ProjectId | null;
+  kind: OperationKind;
+  origin: Origin;
+  state: OperationState;
+  createdAt: IsoTimestamp;
+  updatedAt: IsoTimestamp;
+  // The user dismissed its notice in the app.
+  acknowledged: boolean;
+  journal: OperationJournal;
+}
+
+export interface OperationQuery {
+  projectId?: ProjectId;
+  kinds?: readonly OperationKind[];
+  states?: readonly OperationState[];
+  // Only rows whose notice the user hasn't dismissed.
+  unacknowledged?: boolean;
+  newestFirst?: boolean;
+  limit?: number;
+}
+
+// One file a restore changes: its content before and after (null: absent).
+export interface FileState {
+  oid: GitOid;
+  mode: GitBlobMode;
+}
+
+export interface OperationFile {
+  seq: number;
+  path: string;
+  before: FileState | null;
+  after: FileState | null;
+  // Written as planned (progress only: recovery reads the folder itself).
+  done: boolean;
+}
+
+export interface StoredPlan {
+  planId: PlanId;
+  projectId: ProjectId;
+  createdAt: IsoTimestamp;
+  expiresAt: IsoTimestamp;
+  fingerprint: string;
+  record: PlanRecord;
+  consumedBy: OperationId | null;
 }
 
 // Pushes events to connected desktop sessions.
@@ -60,6 +140,13 @@ export interface CorePorts {
   host: ProjectHost;
 }
 
+// Development and test builds only: named points inside long operations where
+// a test pauses, changes the folder or kills the Engine. Release builds pass
+// none.
+export interface TestHooks {
+  checkpoint?(point: string, detail?: { path?: string; index?: number }): void | Promise<void>;
+}
+
 // Opens what a project use case needs for one folder (implemented by the
 // Engine's composition root with git-backend and adapter-filesystem).
 export interface ProjectHost {
@@ -73,6 +160,9 @@ export interface ProjectHost {
   openListingRepo(root: string): Promise<{ repo: GitRepo; dispose(): Promise<void> }>;
   openWorkspace(root: string): Workspace;
   createStaging(projectId: ProjectId, operationId: OperationId): Promise<StagingArea>;
+  // Removes what operations of this project left in the data directory,
+  // except for the ones named.
+  clearOperationData(projectId: ProjectId, keep: ReadonlySet<OperationId>): Promise<void>;
 }
 
 // ---- Git: the project's own repo (implemented by @draft-tide/git-backend)
@@ -244,6 +334,8 @@ export interface GitHistory {
   indexLock(): Promise<IndexLockState>;
   // Releases `.git/index.lock` only if this operation holds it.
   releaseIndexLock(operationId: OperationId): Promise<void>;
+  // Operations whose prepared index (`index.dt-<id>`) is in `.git`.
+  preparedIndexes(): Promise<OperationId[]>;
   readRef(ref: string, signal?: AbortSignal): Promise<GitOid | null>;
 
   readCommits(oids: readonly GitOid[], signal?: AbortSignal): Promise<GitCommit[]>;
@@ -317,9 +409,39 @@ export interface Workspace {
   // Replaces `.drafttide.json` with these bytes, atomically and only if the
   // file is still what was reviewed: the blob id of its bytes, or null when
   // it must not exist. Anything else is SCOPE_CHANGED and nothing is written.
-  // The one working file Draft Tide writes before M1-05's write-back.
   writeProjectConfig(bytes: Uint8Array, expected: GitOid | null): Promise<void>;
+
+  // ---- Write-back (restore and recovery, M1 plan §9.3 step 6)
+  //
+  // One file at a time, each only if the path still holds what the operation
+  // expects (content id, or null for nothing there). The new bytes go into an
+  // exclusive temporary file in the same folder, are flushed, and replace the
+  // file by rename; parents are real folders, created as needed, never
+  // links. `changed` means the expectation failed and nothing was written.
+  // The bytes must have the blob id `oid` (checked before they replace
+  // anything).
+  writeFile(
+    path: string,
+    content: AsyncIterable<Uint8Array>,
+    options: { mode: GitBlobMode; expected: GitOid | null; oid: GitOid },
+    signal?: AbortSignal,
+  ): Promise<WriteOutcome>;
+  // Removes the file only if it still has this content, then any parent
+  // folders that are left empty.
+  removeFile(path: string, expected: GitOid, signal?: AbortSignal): Promise<WriteOutcome>;
+  // What is at each path, without following links or checking parents.
+  occupants(paths: readonly string[]): Promise<Occupant[]>;
+  // Whether each path exists spelled exactly so, every segment included. On a
+  // case- or normalization-insensitive filesystem, lstat finds `Logo.png` for
+  // `logo.png`; this doesn't.
+  exactNames(paths: readonly string[]): Promise<boolean[]>;
+  // Everything inside a folder, recursively (at most `max` entries).
+  listFolder(path: string, max: number): Promise<{ entries: string[]; complete: boolean }>;
 }
+
+export type WriteOutcome = { changed: false } | { changed: true };
+
+export type Occupant = 'missing' | 'file' | 'folder' | 'link' | 'other';
 
 // Immutable staging for one operation, outside the project folder
 // (<data>/projects/<project-id>/operations/<operation-id>/).

@@ -85,15 +85,36 @@ describe('MCP server', () => {
     expect(tools.map((t) => t.name).sort()).toEqual([
       'engine_info',
       'history_list',
+      'operation_cancel',
+      'operation_status',
+      'project_connect_request',
       'project_list',
+      'project_restore_settings',
       'project_status',
+      'recovery_apply',
+      'recovery_inspect',
+      'recovery_plan',
+      'restore_apply',
+      'restore_plan',
       'snapshot_create',
       'snapshot_diff',
       'snapshot_diff_file',
     ]);
-    // Connecting a folder is the GUI's alone; saving writes, nothing here is destructive.
+    // Connecting a folder is the GUI's alone (the tool can only ask). Restore
+    // and recovery apply overwrite files and say so; plans only read.
+    const destructive = ['restore_apply', 'recovery_apply'];
+    const writes = [
+      'snapshot_create',
+      'operation_cancel',
+      'project_connect_request',
+      'project_restore_settings',
+      ...destructive,
+    ];
     for (const t of tools) {
-      expect(t.annotations).toMatchObject({ readOnlyHint: t.name !== 'snapshot_create', destructiveHint: false });
+      expect(t.annotations, t.name).toMatchObject({
+        readOnlyHint: !writes.includes(t.name),
+        destructiveHint: destructive.includes(t.name),
+      });
     }
     expect(client.getInstructions()).toMatch(/AGENT_ACCESS_DISABLED/);
     await client.close();

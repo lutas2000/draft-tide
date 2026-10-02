@@ -780,6 +780,8 @@ describe('Git invocations', () => {
       'merge-base',
       'read-tree',
       'rev-list',
+      // Publish reads HEAD under the lock (M1-05).
+      'symbolic-ref',
       'update-index',
       'update-ref',
       'write-tree',

@@ -3,6 +3,7 @@ import type { ConnectionState } from '../../shared/bridge.ts';
 import { cn } from '../lib/cn.ts';
 import type { Route } from '../lib/route.ts';
 import { Alert, Cloud, Gear, Layers, TideMark } from './icons.tsx';
+import { OperationBanners } from './operation-banners.tsx';
 import { Button } from './ui/button.tsx';
 
 type Section = 'projects' | 'account' | 'settings';
@@ -89,6 +90,7 @@ export function AppShell({
           </Button>
         </div>
       )}
+      {connection.status === 'connected' && <OperationBanners route={route} navigate={onNavigate} />}
       <main className="dt-scroll min-h-0 flex-1 overflow-y-auto">{children}</main>
     </div>
   );

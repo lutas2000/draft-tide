@@ -1,16 +1,16 @@
 import {
-  DRAFT_TIDE_IDENTITY,
   DtError,
+  MAX_PROJECT_CONFIG_BYTES,
   OperationId,
+  PROJECT_CONFIG_FILE,
   PROJECT_CONFIG_SCHEMA_VERSION,
   ProjectId,
   STATUS_CHANGES_MAX,
   canonicalJson,
   isSafeRelativePath,
+  parseProjectConfig,
   serializeProjectConfig,
   type BindingState,
-  type CommitIdentity,
-  type EngineEvent,
   type ErrorCode,
   type ExistingConfig,
   type FileDiff,
@@ -22,8 +22,9 @@ import {
   type ProjectConfig,
   type ProjectStatus,
   type ProjectSummary,
-  type SaveProgress,
+  type SaveJournal,
   type SavedSnapshot,
+  type SettingsRestored,
   type SnapshotDiff,
 } from '@draft-tide/contracts';
 import {
@@ -34,45 +35,22 @@ import {
   type DiffSide,
   type TreeFileAt,
 } from './compare.ts';
-import { buildLineIndex, historyEntryOf, resolveVersionRef, versionInfoOf, type LineIndex } from './history.ts';
-import type {
-  Clock,
-  EventSink,
-  GitOid,
-  GitTreeEntry,
-  LocalStore,
-  ProjectConfigRead,
-  ProjectGit,
-  ProjectHost,
-  RepoProbe,
-  Workspace,
-} from './ports.ts';
+import type { ProjectContext, WriteRun } from './context.ts';
+import { historyEntryOf, resolveVersionRef, versionInfoOf } from './history.ts';
+import { canMove, operationError } from './journal.ts';
+import type { GitTreeEntry, OperationRecord, ProjectConfigRead, ProjectGit } from './ports.ts';
+import type { RecoveryService } from './recovery.ts';
+import { readSmallBlob } from './restore.ts';
 import { saveSnapshot } from './save.ts';
 import { assertNoBlockers, assertSupportedEntries, reviewScope, type ScopeReview } from './scope.ts';
 import { gitBlobId, sha256Hex } from './text.ts';
-import { HashCache, workingStatus } from './working.ts';
-import { createProjectWriteGuards, type ProjectWriteGuards } from './write-guards.ts';
+import { workingStatus } from './working.ts';
 
 // The project use cases behind the catalog's project, snapshot and history
 // operations (M1-04): review and connect a folder, read its status, save a
 // version, list history and compare versions. Every channel reaches the same
-// functions; who may call what is decided before (policy.ts).
-
-export interface ProjectServiceOptions {
-  store: LocalStore;
-  host: ProjectHost;
-  clock: Clock;
-  events: EventSink;
-  guards?: ProjectWriteGuards;
-  // Before GitHub sign-in (M1-07), the fixed Draft Tide identity.
-  identity?: CommitIdentity;
-  // At most one progress event per operation this often (and on every stage
-  // change).
-  progressIntervalMs?: number;
-  // Tests shorten capture retries and the wait for another Git's lock.
-  retryDelayMs?: (attempt: number) => number;
-  lockWaitMs?: number;
-}
+// functions; who may call what is decided before (policy.ts). Saves are
+// journaled and run recovery first (M1-05).
 
 export interface ProjectService {
   review(root: string, signal?: AbortSignal): Promise<FolderReview>;
@@ -84,6 +62,7 @@ export interface ProjectService {
     asNewProject?: boolean | undefined;
   }): Promise<ProjectBindResult>;
   status(projectId: ProjectId): Promise<ProjectStatus>;
+  restoreSettings(projectId: ProjectId): Promise<SettingsRestored>;
   save(projectId: ProjectId, name: string | undefined, origin: Origin): Promise<SavedSnapshot>;
   history(projectId: ProjectId, page: { skip: number; limit: number }): Promise<HistoryPage>;
   diff(projectId: ProjectId, from: string, to: string): Promise<SnapshotDiff>;
@@ -116,60 +95,8 @@ interface Reviewed {
   configRead: ProjectConfigRead | null;
 }
 
-export function createProjectService(options: ProjectServiceOptions): ProjectService {
-  const { store, host, clock, events } = options;
-  const guards = options.guards ?? createProjectWriteGuards();
-  const identity = options.identity ?? DRAFT_TIDE_IDENTITY;
-  const progressIntervalMs = options.progressIntervalMs ?? 150;
-  // Rebuildable views of Git, per project (M1 plan §6.1): digests of
-  // unchanged files for status, and the branch's line for history.
-  const hashCaches = new Map<ProjectId, HashCache>();
-  const lineIndexes = new Map<ProjectId, LineIndex>();
-
-  const publish = (event: EngineEvent) => events.publish(event);
-
-  function requireProject(projectId: ProjectId): ProjectSummary {
-    const p = store.getProject(projectId);
-    if (!p) throw new DtError('PROJECT_NOT_BOUND', 'no connected project has this id', { projectId });
-    return p;
-  }
-
-  // The bound folder, still at the same canonical path. A folder that is gone,
-  // or whose path now leads elsewhere (a symlink swapped in), is unavailable:
-  // nothing is read from wherever it points now.
-  async function openBound(p: ProjectSummary): Promise<{ root: string; repo: ProjectGit; workspace: Workspace }> {
-    const root = await host.canonicalRoot(p.root);
-    if (root !== p.root) {
-      throw new DtError('LOCAL_ROOT_UNAVAILABLE', 'the project folder now resolves to another location', {
-        reason: 'moved',
-      });
-    }
-    return { root, repo: host.openRepo(root), workspace: host.openWorkspace(root) };
-  }
-
-  // A repo whose branch can be read: present, on a branch, in a form Git and
-  // Draft Tide can read. A Git operation in progress doesn't stop reading.
-  async function readableRepo(repo: ProjectGit): Promise<RepoProbe & { headRef: string; branch: string }> {
-    const probe = await repo.probe();
-    if (!probe.hasRepo) {
-      throw new DtError('LOCAL_ROOT_UNAVAILABLE', "the design folder's history (.git) is missing", {
-        reason: 'repo-missing',
-      });
-    }
-    if (probe.headRef === null || probe.branch === null) {
-      assertNoBlockers(probe.blockers);
-      throw new DtError('GIT_FAILED', 'the current branch could not be read');
-    }
-    return probe as RepoProbe & { headRef: string; branch: string };
-  }
-
-  async function lineIndex(projectId: ProjectId, repo: ProjectGit, tip: GitOid): Promise<LineIndex> {
-    const cached = lineIndexes.get(projectId);
-    if (cached?.tip === tip) return cached;
-    const built = await buildLineIndex(repo, tip);
-    lineIndexes.set(projectId, built);
-    return built;
-  }
+export function createProjectService(ctx: ProjectContext, recovery: RecoveryService): ProjectService {
+  const { store, host, clock, guards, journal, requireProject, openBound, readableRepo, publish, lineIndex } = ctx;
 
   // ---- review and bind
 
@@ -332,8 +259,7 @@ export function createProjectService(options: ProjectServiceOptions): ProjectSer
           project = { projectId, name, root, boundAt: clock.nowIso() };
           store.insertProject(project);
         }
-        hashCaches.delete(projectId);
-        lineIndexes.delete(projectId);
+        ctx.dropCaches(projectId);
         publish({ name: 'project.changed', projectId, reason: 'bound' });
         return { project, initialized, configWritten, relinked };
       });
@@ -355,7 +281,7 @@ export function createProjectService(options: ProjectServiceOptions): ProjectSer
       blockers: [],
       warnings: [],
       recoveryRequired: false,
-      saving: guards.isBusy(projectId),
+      activeOperation: ctx.activeOperation(projectId),
       changes: null,
       unsupported: { count: 0, entries: [] },
       checkedAt: clock.nowIso(),
@@ -394,8 +320,7 @@ export function createProjectService(options: ProjectServiceOptions): ProjectSer
     }
     if (probe.headRef === null) return result;
 
-    const lock = await repo.indexLock();
-    result.recoveryRequired = lock.held && lock.by === 'draft-tide';
+    result.recoveryRequired = recovery.pending(projectId, await repo.indexLock());
     let tipFiles: GitTreeEntry[] = [];
     if (probe.tip !== null) {
       const index = await lineIndex(projectId, repo, probe.tip);
@@ -407,15 +332,13 @@ export function createProjectService(options: ProjectServiceOptions): ProjectSer
     }
     if (!config || probe.blockers.some((b) => b.code === 'REPO_UNSUPPORTED')) return result;
 
-    let cache = hashCaches.get(projectId);
-    if (!cache) hashCaches.set(projectId, (cache = new HashCache()));
     const working = await workingStatus({
       repo,
       workspace,
       probe,
       config,
       tipFiles,
-      cache,
+      cache: ctx.hashCache(projectId),
       nowMs: Date.parse(clock.nowIso()),
     });
     const { taken } = takeWithinBudget(working.changes.slice(0, STATUS_CHANGES_MAX), MAX_CHANGES_BYTES);
@@ -430,7 +353,10 @@ export function createProjectService(options: ProjectServiceOptions): ProjectSer
   async function save(projectId: ProjectId, name: string | undefined, origin: Origin): Promise<SavedSnapshot> {
     const p = requireProject(projectId);
     const operationId = OperationId.parse(crypto.randomUUID());
-    const settled = (outcome: 'completed' | 'no-changes' | 'failed', code: ErrorCode | null) =>
+    const settled = (
+      outcome: 'completed' | 'no-changes' | 'failed' | 'cancelled' | 'recovery-required',
+      code: ErrorCode | null,
+    ) =>
       publish({
         name: 'operation.settled',
         operationId,
@@ -440,63 +366,154 @@ export function createProjectService(options: ProjectServiceOptions): ProjectSer
         outcome,
         code,
       });
-    let lastStage = '';
-    let lastAt = 0;
-    const onProgress = (progress: SaveProgress) => {
-      const now = Date.now();
-      if (progress.stage === lastStage && now - lastAt < progressIntervalMs) return;
-      lastStage = progress.stage;
-      lastAt = now;
-      publish({ name: 'operation.progress', operationId, projectId, operation: 'snapshot.create', origin, progress });
+    const op = { operationId, activity: 'saving' as const, origin };
+    const onProgress = ctx.progressReporter({ ...op, projectId }, 'snapshot.create');
+    const empty: SaveJournal = { kind: 'save', publish: null, snapshot: null, error: null };
+    const state: { rec: OperationRecord } = {
+      rec: journal.begin({ operationId, projectId, kind: 'save', origin, state: 'confirmed', journal: empty }),
+    };
+    const j = () => state.rec.journal as SaveJournal;
+
+    async function underGuard(run: WriteRun) {
+      run.signal.throwIfAborted();
+      state.rec = journal.move(state.rec, 'preflight');
+      const { repo, workspace } = await openBound(p);
+      await recovery.beforeWrite(p, repo);
+      const configName = await workspace.readProjectConfig().then(
+        (r) => (r?.config.projectId === projectId ? r.config.name : null),
+        () => null,
+      );
+      const result = await saveSnapshot({
+        repo,
+        workspace,
+        staging: await host.createStaging(projectId, operationId),
+        projectId,
+        operationId,
+        origin,
+        name,
+        identity: ctx.identity,
+        clock,
+        signal: run.signal,
+        onProgress,
+        onPublish: async (intent) => {
+          // Publishing is never interrupted by a cancel.
+          run.pastPointOfNoReturn();
+          state.rec = journal.move(state.rec, 'publishing', { ...j(), publish: intent });
+          await ctx.hooks.checkpoint?.('save:publishing');
+        },
+        ...(ctx.options.retryDelayMs ? { retryDelayMs: ctx.options.retryDelayMs } : {}),
+        ...(ctx.options.lockWaitMs !== undefined ? { lockWaitMs: ctx.options.lockWaitMs } : {}),
+      });
+      await ctx.hooks.checkpoint?.('save:published');
+      const snapshot = { commit: result.commit, snapshotId: result.snapshotId };
+      state.rec = journal.move(state.rec, 'committed', { ...j(), publish: null, snapshot });
+      state.rec = journal.move(state.rec, 'completed');
+      // The list shows the name the settings carry.
+      if (configName && configName !== p.name) store.updateProject(projectId, { name: configName });
+      return result;
+    }
+
+    // Under the guard: what a failure leaves in the journal. A publish whose
+    // ref moved keeps its row (recovery switches the index before the next
+    // change), and so does a save whose version was recorded (committed).
+    const recordFailure = (e: unknown) => {
+      const code = codeOf(e) ?? 'INTERNAL_ERROR';
+      if (state.rec.state === 'publishing' && code === 'RECOVERY_REQUIRED') return;
+      const to = code === 'CANCELLED' ? 'cancelled' : 'failed';
+      if (canMove(state.rec.state, to)) {
+        state.rec = journal.move(state.rec, to, { ...j(), publish: null, error: operationError(e) });
+      }
     };
 
-    return guards.run(projectId, async () => {
-      try {
-        const { repo, workspace } = await openBound(p);
-        const configName = await workspace.readProjectConfig().then(
-          (r) => (r?.config.projectId === projectId ? r.config.name : null),
-          () => null,
-        );
-        const saved = await saveSnapshot({
-          repo,
-          workspace,
-          staging: await host.createStaging(projectId, operationId),
-          operationId,
-          projectId,
-          origin,
-          name,
-          identity,
-          clock,
-          onProgress,
-          ...(options.retryDelayMs ? { retryDelayMs: options.retryDelayMs } : {}),
-          ...(options.lockWaitMs !== undefined ? { lockWaitMs: options.lockWaitMs } : {}),
-        });
-        // The list shows the name the settings carry.
-        if (configName && configName !== p.name) store.updateProject(projectId, { name: configName });
-        settled('completed', null);
+    try {
+      const saved = await ctx.runWrite(projectId, op, async (run) => {
+        try {
+          return await underGuard(run);
+        } catch (e) {
+          recordFailure(e);
+          throw e;
+        }
+      });
+      settled('completed', null);
+      publish({ name: 'project.changed', projectId, reason: 'saved' });
+      const trimmed = name?.trim();
+      return {
+        projectId,
+        snapshotId: saved.snapshotId,
+        kind: saved.kind,
+        name: trimmed ? trimmed : null,
+        createdAt: saved.createdAt,
+        origin,
+        commit: saved.commit,
+        tree: saved.tree,
+        parent: saved.parent,
+        branch: saved.branch,
+        files: saved.files,
+        bytes: saved.bytes,
+        newObjects: saved.newObjects,
+        newBytes: saved.newBytes,
+      };
+    } catch (e) {
+      const code = codeOf(e) ?? 'INTERNAL_ERROR';
+      if (state.rec.state === 'publishing' && code === 'RECOVERY_REQUIRED') {
+        settled('recovery-required', code);
         publish({ name: 'project.changed', projectId, reason: 'saved' });
-        const trimmed = name?.trim();
-        return {
-          projectId,
-          snapshotId: saved.snapshotId,
-          kind: saved.kind,
-          name: trimmed ? trimmed : null,
-          createdAt: saved.createdAt,
-          origin,
-          commit: saved.commit,
-          tree: saved.tree,
-          parent: saved.parent,
-          branch: saved.branch,
-          files: saved.files,
-          bytes: saved.bytes,
-          newObjects: saved.newObjects,
-          newBytes: saved.newBytes,
-        };
-      } catch (e) {
-        const code = codeOf(e);
-        settled(code === 'NO_CHANGES' ? 'no-changes' : 'failed', code ?? 'INTERNAL_ERROR');
-        throw e;
+        publish({ name: 'operations.changed' });
+      } else {
+        settled(code === 'NO_CHANGES' ? 'no-changes' : code === 'CANCELLED' ? 'cancelled' : 'failed', code);
       }
+      throw e;
+    }
+  }
+
+  // ---- putting a deleted settings file back (M1-05)
+  //
+  // `.drafttide.json` defines the scope, so a folder without it can't be
+  // saved or restored. Its copy in the newest commit comes back, only while
+  // the file is absent: a file that is there, even a broken one, is the
+  // user's to fix, never replaced.
+  async function restoreSettings(projectId: ProjectId): Promise<SettingsRestored> {
+    const p = requireProject(projectId);
+    return guards.run(projectId, async () => {
+      const { repo, workspace } = await openBound(p);
+      const probe = await readableRepo(repo);
+      await recovery.beforeWrite(p, repo);
+      if (probe.tip === null) throw new DtError('SNAPSHOT_NOT_FOUND', 'the project has no versions yet', {});
+      const present = await workspace.readProjectConfig().then(
+        (r) => r !== null,
+        (e: unknown) => {
+          if (e instanceof DtError && e.code === 'CONFIG_INVALID') return true;
+          throw e;
+        },
+      );
+      if (present) {
+        throw new DtError(
+          'INVALID_ARGUMENT',
+          `${PROJECT_CONFIG_FILE} is in the folder; Draft Tide doesn't replace it`,
+          {
+            reason: 'settings-present',
+          },
+        );
+      }
+      const [tip] = await repo.readCommits([probe.tip]);
+      const entry = tip ? await repo.lookupPath(tip.tree, PROJECT_CONFIG_FILE) : null;
+      const bytes = entry?.type === 'blob' ? await readSmallBlob(repo, entry.oid, MAX_PROJECT_CONFIG_BYTES) : null;
+      if (!bytes) {
+        throw new DtError('CONFIG_INVALID', `${PROJECT_CONFIG_FILE}: the newest version has none to put back`, {
+          reason: 'missing',
+        });
+      }
+      if (parseProjectConfig(bytes).projectId !== projectId) {
+        throw new DtError('LOCAL_ROOT_UNAVAILABLE', "the newest version's settings name another project", {
+          reason: 'project-mismatch',
+        });
+      }
+      // Compare-and-swap on "absent": a file that appeared meanwhile is
+      // SCOPE_CHANGED and stays as it is.
+      await workspace.writeProjectConfig(bytes, null);
+      ctx.dropCaches(projectId);
+      publish({ name: 'project.changed', projectId, reason: 'restored' });
+      return { projectId, from: probe.tip };
     });
   }
 
@@ -589,6 +606,7 @@ export function createProjectService(options: ProjectServiceOptions): ProjectSer
     review: async (root, signal) => (await reviewFolder(root, signal)).dto,
     bind,
     status,
+    restoreSettings,
     save,
     history,
     diff,

@@ -18,9 +18,15 @@ const userDataDir = mkdtempSync(join(tmpdir(), 'dt-e2e-ud-'));
 let app: ElectronApplication;
 let page: Page;
 
-function cliEnvelope(...args: string[]): { ok: boolean; data: unknown; error: { code: string } | null } {
+interface CliEnvelope {
+  ok: boolean;
+  data: unknown;
+  error: { code: string; details: Record<string, unknown> } | null;
+}
+
+function cliEnvelope(...args: string[]): CliEnvelope {
   const r = spawnSync(process.execPath, [companionCli, '--json', '--data-dir', dataDir, ...args], { encoding: 'utf8' });
-  return JSON.parse(r.stdout) as { ok: boolean; data: unknown; error: { code: string } | null };
+  return JSON.parse(r.stdout) as CliEnvelope;
 }
 
 // A design folder as an agent might leave it, and the user's own Git without
@@ -291,6 +297,150 @@ describe('the first manual flow (M1-04)', () => {
     await expect
       .poll(() => page.getByRole('switch', { name: '允許 agent 存取' }).getAttribute('aria-checked'))
       .toBe('false');
+  });
+});
+
+describe('restore, recovery and agent requests (M1-05)', () => {
+  const requested = realpathSync(mkdtempSync(join(tmpdir(), 'dt-e2e-requested-')));
+  const read = (rel: string) => readFileSync(join(designDir, rel), 'utf8');
+  const tracked = () => plainGit('status', '--porcelain', '--untracked-files=no');
+  let projectId = '';
+
+  afterAll(() => rmSync(requested, { recursive: true, force: true }));
+
+  async function openProject(): Promise<void> {
+    await nav('專案').click();
+    await page.getByRole('button', { name: /Pricing page/ }).click();
+    await page.getByRole('heading', { name: '版本歷史' }).waitFor();
+  }
+
+  async function setAgentAccess(on: boolean): Promise<void> {
+    await nav('設定與診斷').click();
+    const toggle = page.getByRole('switch', { name: '允許 agent 存取' });
+    await expect.poll(() => toggle.isEnabled()).toBe(true);
+    if ((await toggle.getAttribute('aria-checked')) === String(on)) return;
+    await toggle.click();
+    if (on) await page.getByRole('button', { name: '開啟 agent 存取' }).click();
+    await expect.poll(() => toggle.getAttribute('aria-checked')).toBe(String(on));
+  }
+
+  it('restores a version after showing what changes, keeping unsaved work as a protection version', async () => {
+    await openProject();
+    const v1Index = plainGit('show', 'HEAD~3:index.html');
+    write('index.html', '<h1>unsaved idea</h1>\n');
+    await page.getByRole('button', { name: '重新檢查' }).click();
+    await page.getByText('有 1 個檔案尚未保存').waitFor();
+    await page.getByRole('listitem').filter({ hasText: '第一版' }).click();
+    await page.getByRole('button', { name: '回復到此版' }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByText('回復到 V1').waitFor();
+    await dialog.getByText('目前有 1 個未保存的變更', { exact: false }).waitFor();
+    await dialog.getByText('請先停止會寫入這個資料夾的工具', { exact: false }).waitFor();
+    await page.screenshot({ path: join(shots, 'restore-plan.png') });
+    const before = Number(plainGit('rev-list', '--count', 'HEAD').trim());
+
+    await dialog.getByRole('button', { name: '確認回復' }).click();
+    await page.getByText('已回復到 V1。回復前的內容保存在 V4（回復前保護）。').waitFor();
+    // The bytes of V1, history only added to, and plain Git agrees.
+    expect(read('index.html')).toBe(v1Index);
+    expect(existsSync(join(designDir, 'NOTES.md'))).toBe(false);
+    expect(Number(plainGit('rev-list', '--count', 'HEAD').trim())).toBe(before + 2);
+    expect(plainGit('show', 'HEAD~1:index.html')).toBe('<h1>unsaved idea</h1>\n');
+    expect(tracked()).toBe('');
+    await page.getByRole('listitem').filter({ hasText: '回復版本' }).first().waitFor();
+    await page.getByRole('button', { name: '查看回復前保護版本' }).click();
+    await page.getByLabel('版本詳細內容').getByText('回復前保護').first().waitFor();
+    await page.screenshot({ path: join(shots, 'restore-done.png') });
+  });
+
+  it('asks to check again when the files changed after the plan, changing nothing', async () => {
+    await page.getByRole('listitem').filter({ hasText: 'Yearly plans' }).click();
+    await page.getByRole('button', { name: '回復到此版' }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByText('回復到 V2').waitFor();
+    const confirm = dialog.getByRole('button', { name: '確認回復' });
+    await expect.poll(() => confirm.isEnabled()).toBe(true);
+    const css = read('css/site.css');
+    write('css/site.css', 'body { margin: 1px; }\n');
+    const head = plainGit('rev-parse', 'HEAD');
+    await confirm.click();
+    await dialog.getByText('檔案已改變，請重新檢查回復內容').waitFor();
+    expect(plainGit('rev-parse', 'HEAD')).toBe(head);
+    expect(read('css/site.css')).toBe('body { margin: 1px; }\n');
+    await page.screenshot({ path: join(shots, 'restore-stale.png') });
+    await dialog.getByRole('button', { name: '重新檢查' }).click();
+    await expect.poll(() => confirm.isEnabled()).toBe(true);
+    await dialog.getByRole('button', { name: '取消' }).click();
+    write('css/site.css', css);
+  });
+
+  it('shows an agent’s request to connect a folder; the user declines one and answers another', async () => {
+    await setAgentAccess(true);
+    writeFileSync(join(requested, 'index.html'), '<h1>requested</h1>\n');
+    const first = cliEnvelope('init', 'request', '--root', requested, '--name', 'Requested');
+    expect(first.error?.code).toBe('CONFIRMATION_REQUIRED');
+    const firstId = String(first.error?.details['operationId']);
+    await nav('專案').click();
+    const banner = page.getByRole('status').filter({ hasText: `Agent 請求連接資料夾：${requested}` });
+    await banner.waitFor();
+    await page.screenshot({ path: join(shots, 'agent-request.png') });
+    await banner.getByRole('button', { name: '拒絕' }).click();
+    await banner.waitFor({ state: 'detached' });
+    expect(cliEnvelope('operation', 'status', firstId)).toMatchObject({
+      ok: true,
+      data: { state: 'denied', error: { code: 'APPROVAL_DENIED' } },
+    });
+
+    const second = cliEnvelope('init', 'request', '--root', requested, '--name', 'Requested');
+    const secondId = String(second.error?.details['operationId']);
+    await app.evaluate(({ dialog }, folder) => {
+      dialog.showOpenDialog = () => Promise.resolve({ canceled: false, filePaths: [folder] });
+    }, requested);
+    await banner.getByRole('button', { name: '選擇資料夾…' }).click();
+    await page.getByRole('heading', { name: '確認保存範圍' }).waitFor();
+    await page.getByText('請求連接資料夾', { exact: false }).first().waitFor();
+    await page.getByRole('button', { name: /確認並保存第一版/ }).click();
+    await page.getByRole('heading', { name: '版本歷史' }).waitFor();
+    const answered = cliEnvelope('operation', 'status', secondId) as {
+      data: { state: string; project: { root: string } };
+    };
+    expect(answered.data).toMatchObject({ state: 'completed', project: { root: requested } });
+  });
+
+  it('tells the user about an agent’s restore and its protection version until dismissed', async () => {
+    const list = cliEnvelope('project', 'list') as { data: { projectId: string; name: string }[] };
+    projectId = list.data.find((p) => p.name === 'Pricing page')?.projectId ?? '';
+    write('index.html', '<h1>agent made this</h1>\n');
+    const history = cliEnvelope('--project', projectId, 'history') as {
+      data: { entries: { snapshot: { snapshotId: string; name: string | null } | null }[] };
+    };
+    const yearly = history.data.entries.find((e) => e.snapshot?.name === 'Yearly plans')?.snapshot?.snapshotId ?? '';
+    const plan = cliEnvelope('--project', projectId, 'restore', 'plan', yearly) as { data: { planId: string } };
+    expect(cliEnvelope('--project', projectId, 'restore', 'apply', plan.data.planId)).toMatchObject({ ok: true });
+    const notice = page.getByRole('status').filter({ hasText: 'Agent 經 CLI 把「Pricing page」回復到 V2' });
+    await notice.waitFor();
+    await notice.getByText('回復前的內容保存在 V6', { exact: false }).waitFor();
+    await page.screenshot({ path: join(shots, 'agent-restore-notice.png') });
+    await notice.getByRole('button', { name: '知道了' }).click();
+    await notice.waitFor({ state: 'detached' });
+    expect(tracked()).toBe('');
+    await setAgentAccess(false);
+  });
+
+  it('finishes an index switch Draft Tide left unfinished from the recovery card', async () => {
+    const meta = /Draft-Tide-Snapshot: (.*)$/m.exec(plainGit('log', '-1', '--format=%B'))?.[1] ?? '{}';
+    const { operationId } = JSON.parse(meta) as { operationId: string };
+    writeFileSync(join(designDir, '.git', 'index.lock'), `draft-tide ${operationId}\n`);
+    await openProject();
+    await page.getByRole('button', { name: '重新檢查' }).click();
+    await page.getByRole('heading', { name: '需要恢復' }).waitFor();
+    await page.getByText('請勿手動刪除 .git/index.lock', { exact: false }).waitFor();
+    await page.screenshot({ path: join(shots, 'recovery-card.png') });
+    await page.getByRole('button', { name: '完成', exact: true }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: '完成', exact: true }).click();
+    await expect.poll(() => existsSync(join(designDir, '.git', 'index.lock'))).toBe(false);
+    await page.getByRole('heading', { name: '需要恢復' }).waitFor({ state: 'detached' });
+    expect(tracked()).toBe('');
   });
 });
 

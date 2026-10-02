@@ -14,7 +14,7 @@ Draft Tide is intended to work without an agent, model API key, cloud account, o
 
 ## Status
 
-Early development toward the first local alpha (v0.1). In the desktop app you can connect a design folder, review what will be saved, save versions, see unsaved changes, browse the history (including commits made by other tools) and compare two versions file by file and line by line. The CLI and MCP server can do the same, except connecting a folder, once agent access is turned on in the app. Versions are commits in the project's own Git repository. Restoring designs, previews and GitHub sync are not available yet.
+Early development toward the first local alpha (v0.1). In the desktop app you can connect a design folder, review what will be saved, save versions, see unsaved changes, browse the history (including commits made by other tools) and compare two versions file by file and line by line. The CLI and MCP server can do the same once agent access is turned on in the app, except connecting a folder: they can only ask the user to. Versions are commits in the project's own Git repository. Any version can be restored, from the app or by an agent: unsaved changes are kept as a protection version first, and history only grows. An operation cut short (a crash, a file changed meanwhile) is completed or rolled back from a recovery screen. Previews and GitHub sync are not available yet.
 
 ## Development
 

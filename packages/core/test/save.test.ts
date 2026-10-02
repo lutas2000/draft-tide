@@ -93,6 +93,7 @@ class Repo extends World {
         return Promise.resolve(tree);
       },
       prepareIndexFromTree: notUsed,
+      preparedIndexes: () => Promise.resolve([...this.prepared.keys()] as OperationId[]),
       discardPreparedIndex: (operationId) => {
         this.prepared.delete(operationId);
         return Promise.resolve();

@@ -20,7 +20,7 @@ const HELLO_TIMEOUT_MS = 5_000;
 const MAX_IN_FLIGHT_PER_SESSION = 32;
 
 export interface ServerOptions {
-  core: EngineCore;
+  core: Pick<EngineCore, 'handle' | 'operationsFor'>;
   verifier: PeerVerifier;
   instanceId: EngineInstanceId;
   toolToken: string;

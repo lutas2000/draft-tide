@@ -9,13 +9,22 @@ import {
   okEnvelope,
   type Envelope,
   type ErrorCode,
+  type CommitRef,
   type FileDiff,
   type HistoryEntry,
   type HistoryPage,
+  type OperationCancelResult,
   type OperationName,
+  type OperationStatus,
   type ProjectStatus,
+  type RecoveryPlan,
+  type RecoveryReport,
+  type RecoveryResult,
+  type RestorePlan,
+  type RestoreResult,
   type SavedSnapshot,
   type SnapshotDiff,
+  type VersionInfo,
 } from '@draft-tide/contracts';
 import { connectEngine, type EngineConnection } from '@draft-tide/engine-client';
 import { BUILD } from '../build-info.ts';
@@ -33,8 +42,15 @@ const HINTS: Partial<Record<ErrorCode, string>> = {
   SOURCE_BUSY: 'Files kept changing. Stop the tool that is writing to the folder, then save again.',
   LOCKED: 'Another Git program is using the repository. Nothing was changed; try again in a moment.',
   HISTORY_CHANGED: 'Someone else added to the history meanwhile. Nothing was overwritten; save again.',
-  RECOVERY_REQUIRED: 'An earlier change did not finish. Open the Draft Tide app to complete it.',
+  RECOVERY_REQUIRED:
+    'An earlier change stopped part-way. See `draft-tide --project <id> recover inspect`, or open the Draft Tide app.',
   SNAPSHOT_NOT_FOUND: 'Use a snapshot id or commit id from `draft-tide --project <id> history`.',
+  PLAN_STALE: 'Files changed since the plan was made. Make a new plan and check it again.',
+  UNTRACKED_FILES: 'Files no version holds are in the way. Move them, or save them first, then plan again.',
+  CONFIRMATION_REQUIRED:
+    'Only the user can do this, in the Draft Tide app. Follow the request with `draft-tide operation status <id>`.',
+  APPROVAL_DENIED: 'The user declined the request in the Draft Tide app.',
+  CANCELLED: 'The operation was cancelled before it changed anything.',
 };
 
 // Text from Git or file names, safe to print on a terminal: no escape
@@ -51,7 +67,11 @@ function emit(envelope: Envelope<unknown>, render: (data: never) => string): voi
     process.stdout.write(render(envelope.data as never));
   } else if (envelope.error) {
     const hint = HINTS[envelope.error.code];
-    process.stderr.write(`draft-tide: ${envelope.error.message} (${envelope.error.code})\n${hint ? `${hint}\n` : ''}`);
+    const id = envelope.error.details['operationId'];
+    const ref = typeof id === 'string' ? `Operation: ${id}\n` : '';
+    process.stderr.write(
+      `draft-tide: ${envelope.error.message} (${envelope.error.code})\n${ref}${hint ? `${hint}\n` : ''}`,
+    );
   }
   process.exitCode = exitCodeFor(envelope);
 }
@@ -93,8 +113,8 @@ function renderStatus(s: ProjectStatus): string {
   const lines = [`${safe(s.name)} (${s.project.projectId})`, `Folder: ${safe(s.project.root)} [${s.folder}]`];
   if (s.branch) lines.push(`Branch: ${safe(s.branch)}`);
   lines.push(s.tip ? `Newest: ${versionLabel(s.tip)}` : 'Newest: no versions yet');
-  if (s.recoveryRequired) lines.push('An earlier save did not finish: open the Draft Tide app to complete it.');
-  if (s.saving) lines.push('Saving now.');
+  if (s.recoveryRequired) lines.push('An earlier change stopped part-way: see `recover inspect`.');
+  if (s.activeOperation) lines.push(`Busy: ${s.activeOperation.activity} (${s.activeOperation.origin}).`);
   for (const b of s.blockers) lines.push(`Blocked: ${b.code} (${b.reason})`);
   if (s.unsupported.count > 0) lines.push(`Cannot be saved as they are: ${s.unsupported.count} item(s)`);
   let out = `${lines.join('\n')}\n`;
@@ -141,27 +161,136 @@ function renderFileDiff(d: FileDiff): string {
   return out;
 }
 
-async function run<N extends OperationName>(
-  op: N,
-  payload: Record<string, unknown> | (() => Record<string, unknown>),
+function versionText(v: VersionInfo): string {
+  const label = v.seq !== null ? `V${v.seq}` : 'external change';
+  return `${label} "${safe(v.title)}" (${v.snapshotId ?? v.commit})`;
+}
+
+function refText(r: CommitRef | null): string {
+  return r ? (r.snapshotId ?? r.commit) : '—';
+}
+
+function renderRestorePlan(p: RestorePlan): string {
+  const s = p.summary;
+  const lines = [
+    `Restore to ${versionText(p.target)}`,
+    `Plan: ${p.planId} (valid until ${p.expiresAt})`,
+    `Changes: ${s.overwrite} overwritten, ${s.add} added, ${s.delete} deleted, ${s.unchanged} unchanged`,
+    p.protection.needed
+      ? `Unsaved changes (${p.protection.unsavedChanges} files) are saved as a pre-restore version first.`
+      : 'No unsaved changes: nothing needs protecting.',
+  ];
+  if (p.settings.action === 'kept') lines.push(`.drafttide.json stays as it is (${p.settings.reason ?? ''}).`);
+  if (p.writers.recentlyModified.count > 0) {
+    lines.push(
+      `${p.writers.recentlyModified.count} file(s) changed in the last seconds: stop tools writing to the folder.`,
+    );
+  }
+  for (const c of p.collisions.entries) lines.push(`In the way (${c.reason}): ${safe(c.path)}`);
+  if (p.noop) lines.push('The folder already matches this version: applying changes nothing.');
+  if (p.blocked) lines.push(`Applying would refuse now: ${p.blocked}`);
+  let out = `${lines.join('\n')}\n`;
+  const mark = { overwrite: 'M', add: 'A', delete: 'D' } as const;
+  out += p.changes.map((c) => `  ${mark[c.change]}  ${safe(c.path)}\n`).join('');
+  if (p.truncated) out += '  … (list cut short)\n';
+  return out;
+}
+
+function renderRestoreResult(r: RestoreResult): string {
+  return [
+    `Restored ${refText(r.target)}: ${r.written} written, ${r.deleted} deleted.`,
+    `Restore version: ${refText(r.restored)}`,
+    r.protection
+      ? `Earlier content saved as: ${refText(r.protection)} (pre-restore)`
+      : 'No unsaved changes needed protecting.',
+    '',
+  ].join('\n');
+}
+
+function renderOperation(o: OperationStatus): string {
+  const lines = [`${o.operationId}  ${o.kind}  ${o.state}  (${o.origin}, ${o.updatedAt})`];
+  if (o.error) lines.push(`  ${o.error.code}: ${safe(o.error.message)}`);
+  if (o.kind === 'save' && o.snapshot) lines.push(`  version: ${refText(o.snapshot)}`);
+  if (o.kind === 'restore') {
+    lines.push(`  target: ${refText(o.target)}`);
+    if (o.protection) lines.push(`  pre-restore version: ${refText(o.protection)}`);
+    if (o.restored) lines.push(`  restore version: ${refText(o.restored)}`);
+    if (o.conflicts.count > 0)
+      lines.push(`  left as other programs wrote them: ${o.conflicts.sample.map(safe).join(', ')}`);
+  }
+  if (o.kind === 'connect-request') {
+    lines.push(`  folder: ${safe(o.request.root)}`);
+    if (o.project) lines.push(`  connected as project ${o.project.projectId}`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+function renderRecovery(r: RecoveryReport): string {
+  if (r.items.length === 0) return `Nothing to recover (Git's index lock: ${r.lock}).\n`;
+  return r.items
+    .map((i) => {
+      const lines = [
+        `${i.operationId}  ${i.kind}  ${i.reason}${i.automatic ? '  (completed automatically before the next change)' : ''}`,
+      ];
+      if (i.files) {
+        lines.push(
+          `  files: ${i.files.done} done, ${i.files.pending} not yet, ${i.files.conflicts.count} changed by others`,
+        );
+      }
+      lines.push(`  strategies: ${i.strategies.join(', ')}`);
+      return `${lines.join('\n')}\n`;
+    })
+    .join('');
+}
+
+function renderRecoveryPlan(p: RecoveryPlan): string {
+  return [
+    `Recovery plan ${p.planId}: ${p.strategy} ${p.operationId}`,
+    `Writes ${p.write}, deletes ${p.delete}, leaves ${p.unchanged} as they are; ${p.conflicts.count} changed by others stay untouched.`,
+    p.records ? 'Records the restore version.' : 'Records no version.',
+    '',
+  ].join('\n');
+}
+
+function renderRecoveryResult(r: RecoveryResult): string {
+  const head = r.operation ? renderOperation(r.operation) : "Draft Tide's lock was removed.\n";
+  const conflicts =
+    r.conflicts.count > 0 ? `Left as other programs wrote them: ${r.conflicts.sample.map(safe).join(', ')}\n` : '';
+  return `${head}${r.written} written, ${r.deleted} deleted.\n${conflicts}`;
+}
+
+function renderCancel(r: OperationCancelResult): string {
+  return `${r.outcome}\n${renderOperation(r.operation)}`;
+}
+
+async function withEngine<T>(
+  fn: (conn: EngineConnection) => Promise<T>,
   render: (data: never) => string,
 ): Promise<void> {
   const opts = program.opts<{ dataDir?: string }>();
   let conn: EngineConnection | null = null;
   try {
-    if (typeof payload === 'function') payload = payload();
     conn = await connectEngine({
       channel: 'cli',
       client: CLIENT,
       launch: engineLaunch(),
       ...(opts.dataDir ? { dataDir: opts.dataDir } : {}),
     });
-    emit(okEnvelope(await conn.callRaw(op, payload)), render);
+    const c = conn;
+    emit(okEnvelope(await fn(c)), render);
   } catch (e) {
     emit(errorEnvelope(e), render);
   } finally {
     conn?.close();
   }
+}
+
+function run<N extends OperationName>(
+  op: N,
+  payload: Record<string, unknown> | (() => Record<string, unknown>),
+  render: (data: never) => string,
+): Promise<void> {
+  return withEngine((conn) => conn.callRaw(op, typeof payload === 'function' ? payload() : payload), render);
 }
 
 const program = new Command('draft-tide')
@@ -248,6 +377,101 @@ program
       ? run('snapshot.diffFile', () => ({ projectId: requireProject(), from, to, path: options.file }), renderFileDiff)
       : run('snapshot.diff', () => ({ projectId: requireProject(), from, to }), renderDiff),
   );
+
+const init = program.command('init').description('Connecting a design folder (done by the user in the app)');
+init
+  .command('request')
+  .description('Ask the user to connect a folder in the Draft Tide app (answers CONFIRMATION_REQUIRED)')
+  .requiredOption('--root <path>', 'the folder, as an absolute path')
+  .option('--entry <file>', 'an entry page for previews (repeatable)', (v: string, all: string[]) => [...all, v], [])
+  .option('--name <name>', 'a name for the project')
+  .action((options: { root: string; entry: string[]; name?: string }) =>
+    run(
+      'project.connectRequest',
+      {
+        root: options.root,
+        ...(options.entry.length > 0 ? { entryFiles: options.entry } : {}),
+        ...(options.name !== undefined ? { name: options.name } : {}),
+      },
+      () => '',
+    ),
+  );
+
+program
+  .command('restore-settings')
+  .description('Put a deleted .drafttide.json back from the newest version (needs --project)')
+  .action(() =>
+    run(
+      'project.restoreSettings',
+      () => ({ projectId: requireProject() }),
+      (r: { from: string }) => `Settings file put back from ${r.from}.\n`,
+    ),
+  );
+
+const restore = program.command('restore').description('Restoring a version: plan, then apply (needs --project)');
+restore
+  .command('plan')
+  .description('What restoring a version would overwrite, add and delete; prints a plan id')
+  .argument('<version>', 'a snapshot id or commit id from `history`')
+  .action((version: string) =>
+    run('restore.plan', () => ({ projectId: requireProject(), target: version }), renderRestorePlan),
+  );
+restore
+  .command('apply')
+  .description('Apply a restore plan: unsaved changes are saved as a pre-restore version first')
+  .argument('<plan-id>', 'from `restore plan`')
+  .action((planId: string) =>
+    run('restore.apply', () => ({ projectId: requireProject(), planId }), renderRestoreResult),
+  );
+
+const recover = program.command('recover').description('Operations that stopped part-way (needs --project)');
+recover
+  .command('inspect')
+  .description('What is left and how it can be completed (reads only)')
+  .action(() => run('recovery.inspect', () => ({ projectId: requireProject() }), renderRecovery));
+recover
+  .command('plan')
+  .description('Plan finishing or rolling back an operation; prints a plan id')
+  .requiredOption('--strategy <strategy>', 'finish or rollback')
+  .option('--operation <id>', 'the operation (needed when more than one is left)')
+  .action((options: { strategy: string; operation?: string }) =>
+    withEngine(async (conn) => {
+      const projectId = requireProject();
+      let operationId = options.operation;
+      if (operationId === undefined) {
+        const report = (await conn.callRaw('recovery.inspect', { projectId })) as RecoveryReport;
+        const open = report.items.filter((i) => i.strategies.includes(options.strategy as 'finish' | 'rollback'));
+        if (open.length !== 1) {
+          usage(
+            open.length === 0
+              ? `no operation can be recovered with ${options.strategy}`
+              : `more than one operation is left; pass --operation (${open.map((i) => i.operationId).join(', ')})`,
+          );
+        }
+        operationId = open[0]?.operationId;
+      }
+      return conn.callRaw('recovery.plan', { projectId, operationId, strategy: options.strategy });
+    }, renderRecoveryPlan),
+  );
+recover
+  .command('apply')
+  .description('Apply a recovery plan')
+  .argument('<plan-id>', 'from `recover plan`')
+  .action((planId: string) =>
+    run('recovery.apply', () => ({ projectId: requireProject(), planId }), renderRecoveryResult),
+  );
+
+const operation = program.command('operation').description('Following an operation or a request');
+operation
+  .command('status')
+  .description("An operation's state: a save, a restore, or a request waiting for the user")
+  .argument('<operation-id>')
+  .action((operationId: string) => run('operation.status', { operationId }, renderOperation));
+operation
+  .command('cancel')
+  .description('Cancel at the next safe boundary, or withdraw a request')
+  .argument('<operation-id>')
+  .action((operationId: string) => run('operation.cancel', { operationId }, renderCancel));
 
 program
   .command('mcp')

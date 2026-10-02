@@ -11,13 +11,32 @@ import {
   SnapshotDiffInput,
 } from './history.ts';
 import {
+  ConnectRequestInput,
+  OperationCancelResult,
+  OperationIdInput,
+  OperationList,
+  OperationStatus,
+} from './operation.ts';
+import {
   FolderReview,
   ProjectBindInput,
   ProjectBindResult,
   ProjectReviewInput,
   ProjectStatus,
   ProjectStatusInput,
+  SettingsRestored,
 } from './project.ts';
+import {
+  PlanApplyInput,
+  RecoveryInspectInput,
+  RecoveryPlan,
+  RecoveryPlanInput,
+  RecoveryReport,
+  RecoveryResult,
+  RestorePlan,
+  RestorePlanInput,
+  RestoreResult,
+} from './restore.ts';
 
 // The one list of Engine operations. The Engine dispatches from it, the
 // policy in core authorizes from it, the CLI and MCP server are generated from
@@ -61,8 +80,8 @@ export const OPERATIONS = {
     effect: 'read',
   },
   // Connecting a folder grants Draft Tide that folder: only the trusted GUI,
-  // from a folder the user picked (M1 plan §6.2, §9.1). The tool channel's
-  // request flow arrives with M1-05.
+  // from a folder the user picked (M1 plan §6.2, §9.1). The tool channel can
+  // only ask (project.connectRequest).
   'project.review': {
     summary: 'Review a folder before connecting it: repo form, what would be saved, settings.',
     input: ProjectReviewInput,
@@ -86,6 +105,15 @@ export const OPERATIONS = {
     desktop: true,
     tool: 'agent-access',
     effect: 'read',
+  },
+  'project.restoreSettings': {
+    summary:
+      'Put .drafttide.json back from the newest version when it is missing from the folder (nothing is overwritten).',
+    input: ProjectStatusInput,
+    output: SettingsRestored,
+    desktop: true,
+    tool: 'agent-access',
+    effect: 'write',
   },
   'snapshot.create': {
     summary: 'Save a version of the project folder (NO_CHANGES when nothing changed).',
@@ -118,6 +146,104 @@ export const OPERATIONS = {
     desktop: true,
     tool: 'agent-access',
     effect: 'read',
+  },
+  // Restore and recovery write working files: plan, then apply (M1 plan
+  // §9.2–9.4). The tool channel applies directly while agent access is on;
+  // the app confirms first.
+  'restore.plan': {
+    summary:
+      'Plan restoring the folder to a version: what would be overwritten, added and deleted, and whether unsaved changes are saved first.',
+    input: RestorePlanInput,
+    output: RestorePlan,
+    desktop: true,
+    tool: 'agent-access',
+    effect: 'read',
+  },
+  'restore.apply': {
+    summary:
+      'Apply a restore plan: unsaved changes become a pre-restore version, the files are written, a restore version is recorded. History is only added to. PLAN_STALE if the folder changed since the plan.',
+    input: PlanApplyInput,
+    output: RestoreResult,
+    desktop: true,
+    tool: 'agent-access',
+    effect: 'destructive',
+  },
+  'recovery.inspect': {
+    summary: 'Operations of a project that stopped part-way, what each left behind, and how it can be completed.',
+    input: RecoveryInspectInput,
+    output: RecoveryReport,
+    desktop: true,
+    tool: 'agent-access',
+    effect: 'read',
+  },
+  'recovery.plan': {
+    summary:
+      'Plan finishing or rolling back an operation that stopped part-way; files changed by others are left alone.',
+    input: RecoveryPlanInput,
+    output: RecoveryPlan,
+    desktop: true,
+    tool: 'agent-access',
+    effect: 'read',
+  },
+  'recovery.apply': {
+    summary: 'Apply a recovery plan. PLAN_STALE if the folder changed since the plan.',
+    input: PlanApplyInput,
+    output: RecoveryResult,
+    desktop: true,
+    tool: 'agent-access',
+    effect: 'destructive',
+  },
+  'operation.status': {
+    summary: "An operation's state: a save, a restore, or a request waiting for the user in the app.",
+    input: OperationIdInput,
+    output: OperationStatus,
+    desktop: true,
+    tool: 'agent-access',
+    effect: 'read',
+  },
+  'operation.cancel': {
+    summary:
+      'Cancel an operation at its next safe boundary, or withdraw a request. One that is already writing files finishes.',
+    input: OperationIdInput,
+    output: OperationCancelResult,
+    desktop: true,
+    tool: 'agent-access',
+    effect: 'write',
+  },
+  // Only the user connects folders. This always answers CONFIRMATION_REQUIRED
+  // with an operation id; the app shows the request.
+  'project.connectRequest': {
+    summary:
+      'Ask the user to connect a folder in the Draft Tide app. Answers CONFIRMATION_REQUIRED with an operation id; follow it with operation.status.',
+    input: ConnectRequestInput,
+    output: z.never(),
+    desktop: false,
+    tool: 'agent-access',
+    effect: 'write',
+  },
+  'operation.list': {
+    summary: 'Agent requests waiting for the user, agent restores not yet dismissed, operations needing recovery.',
+    input: NoInput,
+    output: OperationList,
+    desktop: true,
+    tool: 'none',
+    effect: 'read',
+  },
+  'request.decline': {
+    summary: 'Decline an agent request (APPROVAL_DENIED for the agent).',
+    input: OperationIdInput,
+    output: OperationStatus,
+    desktop: true,
+    tool: 'none',
+    effect: 'write',
+  },
+  'operation.dismiss': {
+    summary: 'Dismiss the notice of an agent restore.',
+    input: OperationIdInput,
+    output: OperationStatus,
+    desktop: true,
+    tool: 'none',
+    effect: 'write',
   },
   'agentAccess.get': {
     summary: 'Whether external agents may use Draft Tide through the CLI and MCP.',

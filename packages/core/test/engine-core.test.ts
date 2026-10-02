@@ -9,36 +9,11 @@ import {
   type AgentAccess,
   type Channel,
   type EngineEvent,
-  type ProjectSummary,
 } from '@draft-tide/contracts';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { authorize, createEngineCore, type LocalStore, type ProjectHost } from '../src/index.ts';
-
-// An in-memory stand-in for the SQLite store. Integration tests against the
-// real store live in local-store and the companion.
-function memoryStore(projects: unknown[] = []): LocalStore & { access: AgentAccess } {
-  const list = projects as ProjectSummary[];
-  return {
-    storageSchemaVersion: 1,
-    sqliteVersion: 'test',
-    access: { enabled: false, updatedAt: null },
-    getAgentAccess() {
-      return this.access;
-    },
-    setAgentAccess(enabled, at) {
-      this.access = { enabled, updatedAt: at };
-      return this.access;
-    },
-    listProjects() {
-      return list;
-    },
-    getProject: (id) => list.find((p) => p.projectId === id) ?? null,
-    findProjectByRoot: (root) => list.find((p) => p.root === root) ?? null,
-    insertProject: (p) => void list.push(p),
-    updateProject: () => undefined,
-  };
-}
+import { authorize, createEngineCore, type ProjectHost } from '../src/index.ts';
+import { memoryStore } from './memory-store.ts';
 
 // No folder is ever opened by these tests.
 const noHost: ProjectHost = {
@@ -51,6 +26,7 @@ const noHost: ProjectHost = {
     throw new Error('not used');
   },
   createStaging: () => Promise.reject(new Error('not used')),
+  clearOperationData: () => Promise.resolve(),
 };
 
 function setup(projects: unknown[] = []) {
@@ -171,11 +147,20 @@ describe('engine core', () => {
       'engine.info',
       'project.list',
       'project.status',
+      'project.restoreSettings',
       'snapshot.create',
       'history.list',
       'snapshot.diff',
       'snapshot.diffFile',
+      'restore.plan',
+      'restore.apply',
+      'recovery.inspect',
+      'recovery.plan',
+      'recovery.apply',
+      'operation.status',
+      'operation.cancel',
+      'project.connectRequest',
     ]);
-    expect(core.operationsFor('desktop')).toEqual(OPERATION_NAMES);
+    expect(core.operationsFor('desktop')).toEqual(OPERATION_NAMES.filter((n) => n !== 'project.connectRequest'));
   });
 });

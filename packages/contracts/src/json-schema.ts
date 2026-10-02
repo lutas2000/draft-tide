@@ -4,9 +4,11 @@ import { AgentAccess, EngineInfo, ProjectSummary } from './engine.ts';
 import { envelopeSchema } from './envelope.ts';
 import { ErrorInfo, JsonValue } from './errors.ts';
 import { FileDiff, HistoryEntry, SavedSnapshot, SnapshotDiff } from './history.ts';
+import { OperationList, OperationStatus } from './operation.ts';
 import { FolderReview, ProjectStatus } from './project.ts';
 import { ProjectConfig } from './project-config.ts';
 import { ClientMessage, Discovery, EngineMessage } from './protocol.ts';
+import { RecoveryPlan, RecoveryReport, RestorePlan, RestoreProgress, RestoreResult } from './restore.ts';
 import { CaptureProgress, RepoBlocker, RepoWarning, UnsupportedEntry } from './scope.ts';
 import { CommitIdentity, SaveProgress, SnapshotMetadata } from './snapshot.ts';
 
@@ -36,6 +38,13 @@ export function publicSchemas(): Record<string, z.ZodType> {
     'saved-snapshot': SavedSnapshot,
     'snapshot-diff': SnapshotDiff,
     'file-diff': FileDiff,
+    'restore-plan': RestorePlan,
+    'restore-result': RestoreResult,
+    'restore-progress': RestoreProgress,
+    'recovery-report': RecoveryReport,
+    'recovery-plan': RecoveryPlan,
+    'operation-status': OperationStatus,
+    'operation-list': OperationList,
   };
   for (const name of Object.keys(OPERATIONS) as OperationName[]) {
     const spec = OPERATIONS[name];

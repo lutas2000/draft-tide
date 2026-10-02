@@ -65,27 +65,64 @@ try {
   process.exit(3);
 }
 
-// Crash recovery (M1-05) runs here, before the Engine accepts any request.
-
 const verifier = createPeerVerifier(BUILD.desktopRequirement, log);
 const git = engineGitRuntime(BUILD, dataDir);
 if (!git) log('no Git available: projects can be listed but not reviewed, saved or read');
 const toolToken = randomBytes(32).toString('base64url');
 const startedAt = new Date().toISOString();
 let server: EngineServer | null = null;
-const core = createEngineCore({
-  clock: { nowIso: () => new Date().toISOString() },
-  store,
-  events: { publish: (e: EngineEvent) => server?.publish(e) },
-  identity: {
-    instanceId,
-    appVersion: BUILD.appVersion,
-    startedAt,
-    desktopIdentity: verifier.mode,
-    runtime: { node: process.version, platform: process.platform, arch: process.arch },
+
+// Tests kill the Engine at a named point to leave the state a crash would
+// (DRAFT_TIDE_TEST_CRASH_AT=<point> or <point>#<n> for its n-th time, or
+// <point>:<index> for a file). Never in a release build.
+const crashAt = BUILD.mode === 'release' ? undefined : process.env['DRAFT_TIDE_TEST_CRASH_AT'];
+const seen = new Map<string, number>();
+function checkpoint(point: string, detail?: { index?: number }): void {
+  if (!crashAt) return;
+  const n = (seen.get(point) ?? 0) + 1;
+  seen.set(point, n);
+  if (crashAt === point || crashAt === `${point}#${n}` || crashAt === `${point}:${detail?.index ?? ''}`) {
+    log(`test crash at ${crashAt}`);
+    process.kill(process.pid, 'SIGKILL');
+  }
+}
+const testHooks = crashAt ? { checkpoint } : undefined;
+
+const core = createEngineCore(
+  {
+    clock: { nowIso: () => new Date().toISOString() },
+    store,
+    events: { publish: (e: EngineEvent) => server?.publish(e) },
+    identity: {
+      instanceId,
+      appVersion: BUILD.appVersion,
+      startedAt,
+      desktopIdentity: verifier.mode,
+      runtime: { node: process.version, platform: process.platform, arch: process.arch },
+    },
+    host: createProjectHost({
+      dataDir,
+      git,
+      ...(testHooks ? { gitTestHooks: { afterRefUpdate: () => checkpoint('publish:after-ref') } } : {}),
+    }),
   },
-  host: createProjectHost({ dataDir, git }),
-});
+  testHooks ? { testHooks } : {},
+);
+
+// Crash recovery (M1 plan §9.4) runs before the Engine accepts any request:
+// what an unfinished operation left that needs no decision is completed now.
+// Whatever it can't complete stays in the journal and blocks only its own
+// project's changes.
+try {
+  const { recovered } = await core.startup();
+  for (const r of recovered) {
+    log(
+      `recovery for project ${r.projectId.slice(0, 8)}: ${r.error === null ? 'done' : `left for later (${r.error})`}`,
+    );
+  }
+} catch (e) {
+  log(`recovery at start failed: ${e instanceof Error ? e.message : String(e)}`);
+}
 
 let lastActivity = Date.now();
 server = createEngineServer({

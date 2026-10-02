@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
-import { DtError, ProjectId } from '@draft-tide/contracts';
+import { DtError, OperationId, PlanId, ProjectId, type OperationJournal } from '@draft-tide/contracts';
+import type { OperationRecord, StoredPlan } from '@draft-tide/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MIGRATIONS, STATE_DB_FILE, openLocalStore, tryAcquireEngineLock, type Migration } from '../src/index.ts';
 
@@ -120,12 +121,13 @@ describe('openLocalStore', () => {
 
   it('backs up before migrating and rolls a failed migration back', async () => {
     const dataDir = tempDir();
-    const v1 = await openLocalStore({ dataDir });
+    const first = MIGRATIONS.filter((m) => m.version === 1);
+    const v1 = await openLocalStore({ dataDir, migrations: first });
     v1.setAgentAccess(true, new Date().toISOString());
     v1.close();
 
     const broken: Migration[] = [
-      ...MIGRATIONS,
+      ...first,
       {
         version: 2,
         name: 'half-done',
@@ -167,6 +169,177 @@ describe('openLocalStore', () => {
     const err = await failure(openLocalStore({ dataDir }));
     expect(err.code).toBe('STORAGE_IO_FAILED');
     expect(sha(file)).toBe(before);
+  });
+});
+
+const now = () => new Date().toISOString();
+const oid = (c: string) => c.repeat(40);
+
+function saveOp(projectId: string, over: Partial<OperationRecord> = {}): OperationRecord {
+  const at = now();
+  const journal: OperationJournal = { kind: 'save', publish: null, snapshot: null, error: null };
+  return {
+    operationId: OperationId.parse(randomUUID()),
+    projectId: ProjectId.parse(projectId),
+    kind: 'save',
+    origin: 'gui',
+    state: 'confirmed',
+    createdAt: at,
+    updatedAt: at,
+    acknowledged: false,
+    journal,
+    ...over,
+  };
+}
+
+function plan(projectId: string): StoredPlan {
+  const at = now();
+  return {
+    planId: PlanId.parse(randomUUID()),
+    projectId: ProjectId.parse(projectId),
+    createdAt: at,
+    expiresAt: at,
+    fingerprint: 'f'.repeat(64),
+    record: { kind: 'recovery', operationId: OperationId.parse(randomUUID()), strategy: 'finish' },
+    consumedBy: null,
+  };
+}
+
+describe('the operation journal', () => {
+  it('moves an operation only from the state the caller saw, and keeps it across reopen', async () => {
+    const dataDir = tempDir();
+    const store = await openLocalStore({ dataDir });
+    const projectId = randomUUID();
+    const op = saveOp(projectId);
+    store.insertOperation(op);
+    const publish = {
+      step: 'final' as const,
+      ref: 'refs/heads/main',
+      expectedOld: null,
+      commit: oid('a'),
+      tree: oid('b'),
+      snapshotId: null,
+    };
+    const journal: OperationJournal = { kind: 'save', publish, snapshot: null, error: null };
+    expect(store.updateOperation(op.operationId, ['preflight'], { state: 'publishing', journal, at: now() })).toBe(
+      false,
+    );
+    expect(store.updateOperation(op.operationId, ['confirmed'], { state: 'publishing', journal, at: now() })).toBe(
+      true,
+    );
+    expect(store.updateOperation(op.operationId, ['confirmed'], { state: 'failed', journal, at: now() })).toBe(false);
+    store.close();
+
+    const again = await openLocalStore({ dataDir });
+    expect(again.getOperation(op.operationId)).toMatchObject({ state: 'publishing', journal: { publish } });
+    again.close();
+  });
+
+  it('lists by project, kind, state and notice, oldest or newest first', async () => {
+    const store = await openLocalStore({ dataDir: tempDir() });
+    const a = randomUUID();
+    const b = randomUUID();
+    const ops = [
+      saveOp(a, { state: 'completed' }),
+      saveOp(a, { state: 'recovery-required' }),
+      saveOp(b, { state: 'completed', origin: 'mcp' }),
+    ];
+    for (const op of ops) store.insertOperation(op);
+    store.acknowledgeOperation(ops[0]?.operationId as OperationId);
+    const ids = (q: Parameters<typeof store.listOperations>[0]) => store.listOperations(q).map((r) => r.operationId);
+    expect(ids({ projectId: ProjectId.parse(a) })).toEqual([ops[0]?.operationId, ops[1]?.operationId]);
+    expect(ids({ states: ['completed'] })).toEqual([ops[0]?.operationId, ops[2]?.operationId]);
+    expect(ids({ states: ['completed'], newestFirst: true, limit: 1 })).toEqual([ops[2]?.operationId]);
+    expect(ids({ unacknowledged: true, kinds: ['save'] })).toEqual([ops[1]?.operationId, ops[2]?.operationId]);
+    expect(ids({ states: [] })).toEqual([]);
+    store.close();
+  });
+
+  it("records a restore's files and their progress", async () => {
+    const store = await openLocalStore({ dataDir: tempDir() });
+    const op = saveOp(randomUUID());
+    store.insertOperation(op);
+    store.insertOperationFiles(op.operationId, [
+      { seq: 0, path: 'gone.html', before: { oid: oid('1'), mode: '100644' }, after: null, done: false },
+      { seq: 1, path: '新/頁.html', before: null, after: { oid: oid('2'), mode: '100755' }, done: false },
+    ]);
+    store.markOperationFile(op.operationId, 1, true);
+    expect(store.listOperationFiles(op.operationId)).toEqual([
+      { seq: 0, path: 'gone.html', before: { oid: oid('1'), mode: '100644' }, after: null, done: false },
+      { seq: 1, path: '新/頁.html', before: null, after: { oid: oid('2'), mode: '100755' }, done: true },
+    ]);
+    store.close();
+  });
+
+  it('lets a plan be applied once, starting its operation in the same transaction', async () => {
+    const store = await openLocalStore({ dataDir: tempDir() });
+    const projectId = randomUUID();
+    const p = plan(projectId);
+    store.insertPlan(p);
+    expect(store.getPlan(p.planId)).toEqual(p);
+    const first = saveOp(projectId);
+    const second = saveOp(projectId);
+    expect(store.consumePlan(p.planId, first.operationId, now(), first)).toBe(true);
+    expect(store.consumePlan(p.planId, second.operationId, now(), second)).toBe(false);
+    expect(store.getPlan(p.planId)?.consumedBy).toBe(first.operationId);
+    expect(store.getOperation(first.operationId)).not.toBeNull();
+    expect(store.getOperation(second.operationId)).toBeNull();
+    store.close();
+  });
+
+  it('forgets old ended operations and plans, never unfinished ones', async () => {
+    const store = await openLocalStore({ dataDir: tempDir() });
+    const projectId = randomUUID();
+    const old = '2020-01-01T00:00:00.000Z';
+    const ended = saveOp(projectId, { state: 'completed', updatedAt: old });
+    const open = saveOp(projectId, { state: 'recovery-required', updatedAt: old });
+    for (const op of [ended, open]) store.insertOperation(op);
+    store.insertOperationFiles(ended.operationId, [
+      { seq: 0, path: 'a', before: null, after: { oid: oid('3'), mode: '100644' }, done: true },
+    ]);
+    const stalePlan = { ...plan(projectId), expiresAt: old };
+    store.insertPlan(stalePlan);
+    store.prune(now());
+    expect(store.getOperation(ended.operationId)).toBeNull();
+    expect(store.listOperationFiles(ended.operationId)).toEqual([]);
+    expect(store.getOperation(open.operationId)).not.toBeNull();
+    expect(store.getPlan(stalePlan.planId)).toBeNull();
+    store.close();
+  });
+
+  it('reports a damaged record instead of guessing around it', async () => {
+    const dataDir = tempDir();
+    const store = await openLocalStore({ dataDir });
+    const op = saveOp(randomUUID());
+    store.insertOperation(op);
+    store.close();
+    const raw = new Database(join(dataDir, STATE_DB_FILE));
+    raw.prepare('UPDATE operations SET data = ? WHERE operation_id = ?').run('{"kind":"save"}', op.operationId);
+    raw.close();
+    const again = await openLocalStore({ dataDir });
+    const err = (() => {
+      try {
+        again.getOperation(op.operationId);
+      } catch (e) {
+        return e;
+      }
+      return null;
+    })();
+    expect(err).toMatchObject({ code: 'STORAGE_IO_FAILED', details: { reason: 'corrupt-record' } });
+    again.close();
+  });
+
+  it('migrates a version-1 database, keeping its settings and a backup', async () => {
+    const dataDir = tempDir();
+    const v1 = await openLocalStore({ dataDir, migrations: MIGRATIONS.filter((m) => m.version === 1) });
+    v1.setAgentAccess(true, now());
+    v1.close();
+    const v2 = await openLocalStore({ dataDir });
+    expect(v2.storageSchemaVersion).toBe(2);
+    expect(v2.getAgentAccess().enabled).toBe(true);
+    expect(v2.listOperations({})).toEqual([]);
+    v2.close();
+    expect(readdirSync(dataDir).filter((f) => f.startsWith(`${STATE_DB_FILE}.backup-v1-`))).toHaveLength(1);
   });
 });
 

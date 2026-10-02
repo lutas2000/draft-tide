@@ -3,10 +3,10 @@
 // Git or runs a writable core.
 import './guard.ts';
 import { existsSync } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { isAbsolute, join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { BrowserWindow, app, dialog, ipcMain, net, protocol, session, type IpcMainInvokeEvent } from 'electron';
-import { DtError, OPERATIONS, errorEnvelope, isOperationName } from '@draft-tide/contracts';
+import { DtError, OPERATIONS, errorEnvelope, isOperationName, isSingleLine } from '@draft-tide/contracts';
 import { IPC, type ConnectionState } from '../shared/bridge.ts';
 import { BUILD } from './build-info.ts';
 import { DesktopEngine } from './engine.ts';
@@ -70,12 +70,22 @@ ipcMain.handle(IPC.invoke, async (event, op: unknown, payload: unknown) => {
   }
   return engine.invoke(op, payload);
 });
-ipcMain.handle(IPC.chooseFolder, async (event) => {
+// Where the dialog opens: an absolute, single-line path, else nowhere in
+// particular. It comes from the renderer (an agent's request names a folder),
+// so it is only a starting point and never authorization.
+function dialogStart(defaultPath: unknown): string | undefined {
+  if (typeof defaultPath !== 'string' || defaultPath.length > 4096) return undefined;
+  return isSingleLine(defaultPath) && isAbsolute(defaultPath) ? defaultPath : undefined;
+}
+
+ipcMain.handle(IPC.chooseFolder, async (event, defaultPath: unknown) => {
   if (!trusted(event) || !win) return null;
+  const start = dialogStart(defaultPath);
   const result = await dialog.showOpenDialog(win, {
     title: '選擇設計資料夾',
     buttonLabel: '選擇資料夾',
     properties: ['openDirectory', 'createDirectory'],
+    ...(start ? { defaultPath: start } : {}),
   });
   const folder = result.canceled ? undefined : result.filePaths[0];
   if (!folder) return null;

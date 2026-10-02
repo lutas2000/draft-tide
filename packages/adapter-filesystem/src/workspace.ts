@@ -6,6 +6,7 @@ import { readProjectConfigFile, writeProjectConfigFile } from './config-file.ts'
 import { digestFile } from './digest.ts';
 import { inspectPaths } from './inspect.ts';
 import { volumeSpace } from './space.ts';
+import { exactNamesOf, listFolderEntries, occupantsOf, removeFileBack, writeFileBack } from './writeback.ts';
 
 function checked(rel: string): string {
   if (!isSafeRelativePath(rel)) throw new DtError('PATH_OUTSIDE_ROOT', 'not a path inside the design folder');
@@ -21,6 +22,11 @@ export function openWorkspace(root: string): Workspace {
     inspect: async (paths, signal) => inspectPaths(root, paths.map(checked), signal),
     hash: async (path, expected, signal) => digestFile(root, checked(path), expected, null, signal),
     stage: async (path, expected, dest, signal) => digestFile(root, checked(path), expected, dest, signal),
+    writeFile: async (path, content, options, signal) => writeFileBack(root, checked(path), content, options, signal),
+    removeFile: async (path, expected, signal) => removeFileBack(root, checked(path), expected, signal),
+    occupants: async (paths) => occupantsOf(root, paths.map(checked)),
+    exactNames: async (paths) => exactNamesOf(root, paths.map(checked)),
+    listFolder: async (path, max) => listFolderEntries(root, checked(path), max),
     async projectSpace() {
       // New objects go into `.git`; a folder that isn't a repo yet gets one here.
       const gitDir = join(root, '.git');

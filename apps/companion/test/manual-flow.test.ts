@@ -296,7 +296,7 @@ describe('status, saving and history', () => {
     const root = designFolder();
     const projectId = await connectAndSave(root);
     let status = await desktop.call('project.status', { projectId });
-    expect(status).toMatchObject({ folder: 'available', branch: 'main', changes: { total: 0 }, saving: false });
+    expect(status).toMatchObject({ folder: 'available', branch: 'main', changes: { total: 0 }, activeOperation: null });
     expect(status.tip).toMatchObject({ source: 'draft-tide', seq: 1, snapshot: { kind: 'baseline' } });
 
     write(root, 'index.html', '<h1>v2</h1>\n');
