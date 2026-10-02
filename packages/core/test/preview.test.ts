@@ -268,6 +268,10 @@ function setup(options: { budget?: Record<string, number>; artifactTtlMs?: numbe
     openWorkspace: () => ({}) as Workspace,
     createStaging: () => Promise.reject(new Error('not used')),
     clearOperationData: () => Promise.resolve(),
+    remoteHeads: () => Promise.reject(new Error('no network in this test')),
+    inspectDestination: () => Promise.reject(new Error('not used')),
+    prepareDestination: () => Promise.reject(new Error('not used')),
+    removeFreshRepo: () => Promise.resolve(),
   };
   const core = createEngineCore(
     {

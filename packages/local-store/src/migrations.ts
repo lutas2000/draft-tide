@@ -2,8 +2,7 @@ import type Database from 'better-sqlite3';
 
 // Ordered, append-only. Never edit a shipped migration; add a new one. Each
 // runs in its own transaction together with its row in schema_migrations.
-// Tables arrive with the work package that first needs them (remote bindings
-// and the sync queue with M1-07).
+// Tables arrive with the work package that first needs them.
 export interface Migration {
   version: number;
   name: string;
@@ -101,6 +100,48 @@ export const MIGRATIONS: readonly Migration[] = [
           PRIMARY KEY (project_id, cache_key)
         ) STRICT;
         CREATE INDEX preview_cache_by_use ON preview_cache (used_at);
+      `);
+    },
+  },
+  {
+    version: 4,
+    name: 'remote-bindings-and-sync-queue',
+    up(db) {
+      // Remote sync (M1 plan §10, TECH_STACK §6.1): one GitHub repository per
+      // project, what was last seen of it, and pushes waiting to run. data
+      // holds the RemoteBinding (contracts remote.ts), last_error a SyncError.
+      // Plans may now have no project (opening one from GitHub), so the plans
+      // table is rebuilt with a nullable project_id.
+      db.exec(`
+        CREATE TABLE remote_bindings (
+          project_id TEXT PRIMARY KEY,
+          data TEXT NOT NULL,
+          remote_tip TEXT,
+          last_check_at TEXT,
+          last_push_at TEXT,
+          last_error TEXT
+        ) STRICT;
+
+        CREATE TABLE sync_queue (
+          project_id TEXT PRIMARY KEY,
+          requested_at TEXT NOT NULL,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          next_attempt_at TEXT
+        ) STRICT;
+
+        CREATE TABLE plans_v4 (
+          plan_id TEXT PRIMARY KEY,
+          project_id TEXT,
+          created_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          fingerprint TEXT NOT NULL,
+          data TEXT NOT NULL,
+          consumed_by TEXT,
+          consumed_at TEXT
+        ) STRICT;
+        INSERT INTO plans_v4 SELECT plan_id, project_id, created_at, expires_at, fingerprint, data, consumed_by, consumed_at FROM plans;
+        DROP TABLE plans;
+        ALTER TABLE plans_v4 RENAME TO plans;
       `);
     },
   },

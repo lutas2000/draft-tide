@@ -9,6 +9,8 @@ import {
   Origin,
   PlanRecord,
   PreviewRecord,
+  RemoteBinding,
+  SyncError,
   TERMINAL_OPERATION_STATES,
   type AgentAccess,
   type IsoTimestamp,
@@ -24,8 +26,11 @@ import type {
   OperationQuery,
   OperationRecord,
   PreviewCacheEntry,
+  QueuedPush,
+  RemoteStateChange,
   StoredPlan,
   StoredPreview,
+  StoredRemote,
 } from '@draft-tide/core';
 import { MIGRATIONS, type Migration } from './migrations.ts';
 
@@ -149,6 +154,7 @@ async function migrate(db: Database.Database, file: string, migrations: readonly
 }
 
 const AGENT_ACCESS_KEY = 'agent_access';
+const STORE_ID_KEY = 'store_id';
 const AGENT_ACCESS_OFF: AgentAccess = { enabled: false, updatedAt: null };
 
 interface ProjectRow {
@@ -184,6 +190,22 @@ interface FileRow {
   done: number;
 }
 
+interface RemoteRow {
+  project_id: string;
+  data: string;
+  remote_tip: string | null;
+  last_check_at: string | null;
+  last_push_at: string | null;
+  last_error: string | null;
+}
+
+interface QueueRow {
+  project_id: string;
+  requested_at: string;
+  attempts: number;
+  next_attempt_at: string | null;
+}
+
 interface PreviewRow {
   project_id: string;
   cache_key: string;
@@ -195,7 +217,7 @@ interface PreviewRow {
 
 interface PlanRow {
   plan_id: string;
-  project_id: string;
+  project_id: string | null;
   created_at: string;
   expires_at: string;
   fingerprint: string;
@@ -248,6 +270,27 @@ function toOperation(r: OperationRow): OperationRecord {
 }
 
 const OID = /^[0-9a-f]{40}$/;
+
+function toRemote(r: RemoteRow): StoredRemote {
+  if (r.remote_tip !== null && !OID.test(r.remote_tip)) throw corrupt('remote binding');
+  return {
+    projectId: r.project_id as ProjectId,
+    remote: parseJson(r.data, RemoteBinding, 'remote binding'),
+    remoteTip: r.remote_tip,
+    lastCheckAt: r.last_check_at,
+    lastPushAt: r.last_push_at,
+    lastError: r.last_error === null ? null : parseJson(r.last_error, SyncError, 'remote binding'),
+  };
+}
+
+function toQueued(r: QueueRow): QueuedPush {
+  return {
+    projectId: r.project_id as ProjectId,
+    requestedAt: r.requested_at,
+    attempts: r.attempts,
+    nextAttemptAt: r.next_attempt_at,
+  };
+}
 
 function fileState(oid: string | null, mode: string | null): FileState | null {
   if (oid === null && mode === null) return null;
@@ -329,6 +372,14 @@ class SqliteLocalStore implements LocalStoreHandle {
     this.#db
       .prepare('UPDATE project_bindings SET root = ?, name = ? WHERE project_id = ?')
       .run(changes.root ?? current.root, changes.name ?? current.name, projectId);
+  }
+
+  deleteProject(projectId: ProjectId): void {
+    this.#db.transaction(() => {
+      this.#db.prepare('DELETE FROM remote_bindings WHERE project_id = ?').run(projectId);
+      this.#db.prepare('DELETE FROM sync_queue WHERE project_id = ?').run(projectId);
+      this.#db.prepare('DELETE FROM project_bindings WHERE project_id = ?').run(projectId);
+    })();
   }
 
   // ---- The operation journal
@@ -465,7 +516,7 @@ class SqliteLocalStore implements LocalStoreHandle {
     if (!row) return null;
     return {
       planId: row.plan_id as PlanId,
-      projectId: row.project_id as ProjectId,
+      projectId: row.project_id as ProjectId | null,
       createdAt: row.created_at,
       expiresAt: row.expires_at,
       fingerprint: row.fingerprint,
@@ -493,6 +544,104 @@ class SqliteLocalStore implements LocalStoreHandle {
         .run(before, ...ended);
       this.#db.prepare('DELETE FROM plans WHERE expires_at < ?').run(before);
     })();
+  }
+
+  // ---- This data store's id
+
+  storeId(): string {
+    const row = this.#db.prepare('SELECT value FROM settings WHERE key = ?').get(STORE_ID_KEY) as
+      { value: string } | undefined;
+    if (row && /^[0-9a-f-]{36}$/.test(row.value)) return row.value;
+    const id = crypto.randomUUID();
+    this.#db
+      .prepare('INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES (?, ?, ?)')
+      .run(STORE_ID_KEY, id, new Date().toISOString());
+    const stored = this.#db.prepare('SELECT value FROM settings WHERE key = ?').get(STORE_ID_KEY) as { value: string };
+    return stored.value;
+  }
+
+  // ---- Remote bindings and the push queue
+
+  getRemote(projectId: ProjectId): StoredRemote | null {
+    const row = this.#db.prepare('SELECT * FROM remote_bindings WHERE project_id = ?').get(projectId) as
+      RemoteRow | undefined;
+    return row ? toRemote(row) : null;
+  }
+
+  listRemotes(): StoredRemote[] {
+    return (this.#db.prepare('SELECT * FROM remote_bindings ORDER BY project_id').all() as RemoteRow[]).map(toRemote);
+  }
+
+  // A new binding starts with nothing seen and no error.
+  putRemote(projectId: ProjectId, remote: RemoteBinding): void {
+    this.#db
+      .prepare(
+        `INSERT INTO remote_bindings (project_id, data) VALUES (?, ?)
+         ON CONFLICT (project_id) DO UPDATE SET data = excluded.data, remote_tip = NULL, last_check_at = NULL,
+           last_push_at = NULL, last_error = NULL`,
+      )
+      .run(projectId, JSON.stringify(remote));
+  }
+
+  deleteRemote(projectId: ProjectId): void {
+    this.#db.transaction(() => {
+      this.#db.prepare('DELETE FROM remote_bindings WHERE project_id = ?').run(projectId);
+      this.#db.prepare('DELETE FROM sync_queue WHERE project_id = ?').run(projectId);
+    })();
+  }
+
+  updateRemoteState(projectId: ProjectId, change: RemoteStateChange): void {
+    const sets: string[] = [];
+    const params: (string | null)[] = [];
+    if (change.remoteTip !== undefined) {
+      sets.push('remote_tip = ?');
+      params.push(change.remoteTip);
+    }
+    if (change.lastCheckAt !== undefined) {
+      sets.push('last_check_at = ?');
+      params.push(change.lastCheckAt);
+    }
+    if (change.lastPushAt !== undefined) {
+      sets.push('last_push_at = ?');
+      params.push(change.lastPushAt);
+    }
+    if (change.lastError !== undefined) {
+      sets.push('last_error = ?');
+      params.push(change.lastError === null ? null : JSON.stringify(change.lastError));
+    }
+    if (sets.length === 0) return;
+    this.#db.prepare(`UPDATE remote_bindings SET ${sets.join(', ')} WHERE project_id = ?`).run(...params, projectId);
+  }
+
+  // Due at once; a request while one waits keeps the earlier request time
+  // and makes it due now (whatever it was waiting for may have changed).
+  queuePush(projectId: ProjectId, at: IsoTimestamp): void {
+    this.#db
+      .prepare(
+        `INSERT INTO sync_queue (project_id, requested_at, attempts, next_attempt_at) VALUES (?, ?, 0, ?)
+         ON CONFLICT (project_id) DO UPDATE SET next_attempt_at = excluded.next_attempt_at`,
+      )
+      .run(projectId, at, at);
+  }
+
+  getQueuedPush(projectId: ProjectId): QueuedPush | null {
+    const row = this.#db.prepare('SELECT * FROM sync_queue WHERE project_id = ?').get(projectId) as
+      QueueRow | undefined;
+    return row ? toQueued(row) : null;
+  }
+
+  listQueuedPushes(): QueuedPush[] {
+    return (this.#db.prepare('SELECT * FROM sync_queue ORDER BY requested_at').all() as QueueRow[]).map(toQueued);
+  }
+
+  deferPush(projectId: ProjectId, attempts: number, nextAttemptAt: IsoTimestamp | null): void {
+    this.#db
+      .prepare('UPDATE sync_queue SET attempts = ?, next_attempt_at = ? WHERE project_id = ?')
+      .run(attempts, nextAttemptAt, projectId);
+  }
+
+  dequeuePush(projectId: ProjectId): void {
+    this.#db.prepare('DELETE FROM sync_queue WHERE project_id = ?').run(projectId);
   }
 
   // ---- The preview cache's index (a cache: unreadable rows are dropped)

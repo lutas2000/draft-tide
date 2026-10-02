@@ -1,4 +1,5 @@
 export * from './config-file.ts';
+export * from './destination.ts';
 export * from './digest.ts';
 export * from './inspect.ts';
 export * from './root.ts';

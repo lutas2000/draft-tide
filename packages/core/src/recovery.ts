@@ -17,10 +17,12 @@ import {
   type RecoveryReport,
   type RecoveryResult,
   type RecoveryStrategy,
+  type OpenJournal,
+  type PullJournal,
   type RestoreJournal,
 } from '@draft-tide/contracts';
 import type { ProjectContext } from './context.ts';
-import { isOpen, operationError, operationStatusOf } from './journal.ts';
+import { PROJECT_OPERATION_KINDS, isOpen, operationError, operationStatusOf } from './journal.ts';
 import { compareGitPaths } from './paths.ts';
 import type {
   GitOid,
@@ -31,6 +33,7 @@ import type {
   RepoProbe,
   Workspace,
 } from './ports.ts';
+import { recordFastForward } from './pull.ts';
 import { accessCheck, fileStates, recordRestore, transition, usablePlan, type RecoveryGate } from './restore.ts';
 import { assertNoBlockers } from './scope.ts';
 import { sha256Hex } from './text.ts';
@@ -48,8 +51,9 @@ import { sha256Hex } from './text.ts';
 //   lock is released; the version was already in history;
 // - a publish whose ref never moved, or that someone else has since built on.
 //
-// Left for the user (finish or rollback), because files were written: a
-// restore that stopped part-way. Either strategy moves only files that still
+// Left for the user, because files were written: a restore (finish or
+// rollback), a pull (finish while the branch is still where it started, or
+// rollback) or an open from GitHub (finish) that stopped part-way. Either strategy moves only files that still
 // hold exactly what the restore expects; a file another program changed is
 // left as it is and reported. Only a lock whose content names a Draft Tide
 // operation is ever removed, and never because of its age.
@@ -91,7 +95,8 @@ interface Assessed {
   item: RecoveryItem;
   rec: OperationRecord | null;
   auto: AutoAction | null;
-  // For a restore that wrote files: each file and where it is now.
+  // For a restore, pull or open that wrote files: each file and where it is
+  // now.
   files: { file: OperationFile; now: 'before' | 'after' | 'neither' }[] | null;
 }
 
@@ -105,7 +110,7 @@ export function createRecoveryService(ctx: ProjectContext): RecoveryService {
 
   const openOperations = (projectId: ProjectId) =>
     store
-      .listOperations({ projectId, kinds: ['save', 'restore'], states: OPEN_STATES })
+      .listOperations({ projectId, kinds: PROJECT_OPERATION_KINDS, states: OPEN_STATES })
       .filter((r) => !ctx.inFlight(r.operationId));
 
   // ---- Assessing what is left
@@ -168,8 +173,12 @@ export function createRecoveryService(ctx: ProjectContext): RecoveryService {
     switching: boolean,
   ): Promise<Assessed> {
     const j = rec.journal;
-    if (j.kind === 'connect-request') throw new DtError('INTERNAL_ERROR', 'a request is not a project operation');
+    if (j.kind !== 'save' && j.kind !== 'restore' && j.kind !== 'pull' && j.kind !== 'open') {
+      throw new DtError('INTERNAL_ERROR', 'a request is not a project operation');
+    }
     const restore = j.kind === 'restore' ? j : null;
+    // Operations that write working files.
+    const writes = j.kind === 'save' ? null : j;
     const item = (
       reason: RecoveryReason,
       strategies: RecoveryStrategy[],
@@ -182,7 +191,7 @@ export function createRecoveryService(ctx: ProjectContext): RecoveryService {
       state: rec.state,
       reason,
       startedAt: rec.createdAt,
-      target: restore?.target ?? null,
+      target: writes?.target ?? null,
       protection: restore?.protection ?? null,
       files: files && {
         total: files.length,
@@ -198,10 +207,15 @@ export function createRecoveryService(ctx: ProjectContext): RecoveryService {
       message: 'the Engine stopped before this changed anything',
     } as const;
 
-    // Files were written: the user decides.
+    // Files were written: the user decides. A pull can be finished only while
+    // its branch is still at the base (it fast-forwards from there); an open
+    // only finishes (the folder was empty: there is nothing to put back).
     const decide = async (reason: RecoveryReason): Promise<Assessed> => {
       const files = workspace ? await filesNow(rec, workspace, probe.trustExecutableBit) : null;
-      return { rec, auto: null, files, item: item(reason, ['finish', 'rollback'], false, files) };
+      let strategies: RecoveryStrategy[] = ['finish', 'rollback'];
+      if (j.kind === 'open') strategies = ['finish'];
+      else if (j.kind === 'pull' && (await repo.readRef(j.ref)) !== j.base.commit) strategies = ['rollback'];
+      return { rec, auto: null, files, item: item(reason, strategies, false, files) };
     };
 
     switch (rec.state) {
@@ -220,7 +234,7 @@ export function createRecoveryService(ctx: ProjectContext): RecoveryService {
       case 'applying':
       case 'verified':
       case 'recovery-required':
-        return decide(restore?.reason ?? 'interrupted');
+        return decide(writes?.reason ?? 'interrupted');
       case 'publishing':
         break;
       default:
@@ -236,7 +250,9 @@ export function createRecoveryService(ctx: ProjectContext): RecoveryService {
         item: item('interrupted', ['rollback'], true),
       };
     }
-    const restoreFinal = j.kind === 'restore' && intent.step === 'final';
+    // The final publish of an operation that wrote files: if it didn't
+    // happen, the user decides.
+    const restoreFinal = writes !== null && intent.step === 'final';
     const tip = await repo.readRef(intent.ref);
     if (tip === intent.commit) {
       // The version is in history. Its index goes in only while HEAD is still
@@ -292,6 +308,8 @@ export function createRecoveryService(ctx: ProjectContext): RecoveryService {
   // ---- Doing it
 
   const restoreJournal = (rec: OperationRecord) => rec.journal as RestoreJournal;
+  // What every file-writing operation's journal has.
+  const writingJournal = (rec: OperationRecord) => rec.journal as RestoreJournal | PullJournal | OpenJournal;
 
   // Moves the record to a terminal or next state, keeping its kind's details.
   function settle(rec: OperationRecord, state: OperationState, patch: Record<string, unknown> = {}): OperationRecord {
@@ -307,12 +325,13 @@ export function createRecoveryService(ctx: ProjectContext): RecoveryService {
     const { rec, auto } = a;
     if (!auto) return;
     const id = a.item.operationId;
-    const step = rec?.journal.kind === 'connect-request' ? null : (rec?.journal.publish?.step ?? null);
+    const step = rec && 'publish' in rec.journal ? (rec.journal.publish?.step ?? null) : null;
     switch (auto.kind) {
       case 'abandon':
         await repo.releaseIndexLock(id);
         await repo.discardPreparedIndex(id);
         if (rec) settle(rec, 'failed', { error: auto.error, publish: null });
+        if (rec?.journal.kind === 'open') await undoOpen(rec.journal);
         return;
       case 'switch-index':
         if (!auto.switched) await finishIndex(repo, id, auto.tree);
@@ -347,7 +366,12 @@ export function createRecoveryService(ctx: ProjectContext): RecoveryService {
         } else {
           const intent = (rec.journal as { publish: PublishIntent }).publish;
           const result = { commit: intent.commit, snapshotId: intent.snapshotId };
-          settle(rec, 'superseded', rec.journal.kind === 'save' ? { snapshot: result } : { restored: result });
+          const kind = rec.journal.kind;
+          settle(
+            rec,
+            'superseded',
+            kind === 'save' ? { snapshot: result } : kind === 'restore' ? { restored: result } : { publish: null },
+          );
         }
         return;
       case 'complete':
@@ -356,16 +380,31 @@ export function createRecoveryService(ctx: ProjectContext): RecoveryService {
     }
   }
 
+  // An open that stopped before its first file is undone as the open itself
+  // would have: the project's binding goes (or it gets its old folder back),
+  // and the new `.git` (and the folder, if the open made it) is removed while
+  // nothing else is in it.
+  async function undoOpen(j: OpenJournal): Promise<void> {
+    const projectId = j.project?.projectId;
+    if (!projectId) return;
+    if (j.relinkedFrom !== null) store.updateProject(projectId, { root: j.relinkedFrom });
+    else store.deleteProject(projectId);
+    await ctx.host.removeFreshRepo(j.root, j.createdFolder).catch(() => undefined);
+  }
+
   // A final publish whose version is in history: committed, then completed.
   function completePublished(rec: OperationRecord): OperationRecord {
     const intent = (rec.journal as { publish: PublishIntent }).publish;
     const result = { commit: intent.commit, snapshotId: intent.snapshotId };
+    const kind = rec.journal.kind;
     const committed = settle(
       rec,
       'committed',
-      rec.journal.kind === 'save'
+      kind === 'save'
         ? { snapshot: result, publish: null, error: null }
-        : { restored: result, publish: null, reason: null, error: null },
+        : kind === 'restore'
+          ? { restored: result, publish: null, reason: null, error: null }
+          : { publish: null, reason: null, error: null },
     );
     return settle(committed, 'completed');
   }
@@ -387,7 +426,7 @@ export function createRecoveryService(ctx: ProjectContext): RecoveryService {
           // matches the branch.
           await repo.releaseIndexLock(a.rec.operationId);
           await repo.discardPreparedIndex(a.rec.operationId);
-          const j = restoreJournal(a.rec);
+          const j = writingJournal(a.rec);
           settle(a.rec, 'recovery-required', { reason: j.reason ?? a.item.reason, publish: null });
           changed = true;
         }
@@ -533,7 +572,7 @@ export function createRecoveryService(ctx: ProjectContext): RecoveryService {
       throw new DtError('PLAN_STALE', 'this plan was already applied; make a new one', { reason: 'used' });
     }
     const checkAccess = accessCheck(ctx, origin);
-    const report = ctx.progressReporter({ operationId, activity: 'recovering', origin, projectId }, 'recovery.apply');
+    const report = ctx.progressReporter({ operationId, origin, projectId }, 'recovery.apply');
     const settled = (outcome: 'completed' | 'failed' | 'recovery-required', code: DtError['code'] | null) =>
       ctx.publish({
         name: 'operation.settled',
@@ -610,11 +649,12 @@ export function createRecoveryService(ctx: ProjectContext): RecoveryService {
       throw new DtError('INTERNAL_ERROR', 'nothing to recover');
     }
 
-    // A restore that wrote files. The repo must still be usable and on the
-    // restore's branch, with Git's index free (or held by this operation).
+    // A restore, pull or open that wrote files. The repo must still be usable
+    // and on the operation's branch, with Git's index free (or held by this
+    // operation).
     assertNoBlockers(probe.blockers);
     let rec = a.rec;
-    const j = restoreJournal(rec);
+    const j = writingJournal(rec);
     if (probe.headRef !== j.ref) {
       throw new DtError(
         'RECOVERY_REQUIRED',
@@ -666,6 +706,11 @@ export function createRecoveryService(ctx: ProjectContext): RecoveryService {
     }
     rec = settle(rec, 'verified', { conflicts: conflictExcerpt });
     const state = { rec };
+    if (j.kind !== 'restore') {
+      // A pull moves the branch from its base, an open creates it.
+      await recordFastForward(ctx, state, { repo, report: (p) => report({ ...p, stage: 'publish' }) });
+      return { operation: operationStatusOf(state.rec), written, deleted, conflicts: conflictExcerpt };
+    }
     const tip = await repo.readRef(j.ref);
     if (tip === null) throw new DtError('GIT_FAILED', 'the branch could not be read');
     await recordRestore(ctx, state, {
@@ -680,7 +725,11 @@ export function createRecoveryService(ctx: ProjectContext): RecoveryService {
   async function recoverAll() {
     const out: { projectId: ProjectId; error: string | null }[] = [];
     for (const p of store.listProjects()) {
-      const open = store.listOperations({ projectId: p.projectId, kinds: ['save', 'restore'], states: OPEN_STATES });
+      const open = store.listOperations({
+        projectId: p.projectId,
+        kinds: PROJECT_OPERATION_KINDS,
+        states: OPEN_STATES,
+      });
       let repo: ProjectGit;
       try {
         ({ repo } = await ctx.openBound(p));

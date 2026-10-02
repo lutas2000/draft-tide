@@ -4,6 +4,9 @@ import type {
   DesktopIdentityMode,
   EngineEvent,
   EngineInstanceId,
+  GitHubLinks,
+  GitHubRepo,
+  GitHubUser,
   IsoTimestamp,
   OperationId,
   OperationJournal,
@@ -21,14 +24,17 @@ import type {
   ProjectConfig,
   ProjectId,
   ProjectSummary,
+  RemoteBinding,
+  RemoteRepoList,
   RepoBlocker,
+  RepoRef,
   RepoWarning,
+  SyncError,
 } from '@draft-tide/contracts';
 
 // What core needs from the outside. The Engine's composition root provides
-// real implementations (local-store, git-backend, adapter-filesystem, the Node
-// runtime); tests may provide their own. The remote provider port arrives with
-// its implementation (M1-07).
+// real implementations (local-store, git-backend, adapter-filesystem,
+// remote-github, the Node runtime); tests may provide their own.
 
 export interface Clock {
   nowIso(): IsoTimestamp;
@@ -48,6 +54,8 @@ export interface LocalStore {
   findProjectByRoot(root: string): ProjectSummary | null;
   insertProject(project: ProjectSummary): void;
   updateProject(projectId: ProjectId, changes: { root?: string; name?: string }): void;
+  // Only to undo an open from GitHub that failed before writing a file.
+  deleteProject(projectId: ProjectId): void;
 
   // The operation journal (TECH_STACK §6.4). Rows are written before the
   // step they describe, so recovery never has to guess.
@@ -75,6 +83,28 @@ export interface LocalStore {
   // Ended operations and plans older than this go; unfinished ones never do.
   prune(before: IsoTimestamp): void;
 
+  // This data store's own id (created once): names its keychain item, so two
+  // data stores never share a sign-in (M1-07).
+  storeId(): string;
+
+  // Remote bindings and the push queue (M1 plan §10.2–10.3). A binding is
+  // local state: the repository is the user's, the folder's `remote.origin`
+  // is only a courtesy to other Git tools.
+  getRemote(projectId: ProjectId): StoredRemote | null;
+  listRemotes(): StoredRemote[];
+  putRemote(projectId: ProjectId, remote: RemoteBinding): void;
+  // Removes the binding and its queued push.
+  deleteRemote(projectId: ProjectId): void;
+  // What the last fetch or push saw, and the last failure (null clears it).
+  updateRemoteState(projectId: ProjectId, change: RemoteStateChange): void;
+  // A push is wanted; requesting again keeps the earliest request.
+  queuePush(projectId: ProjectId, at: IsoTimestamp): void;
+  getQueuedPush(projectId: ProjectId): QueuedPush | null;
+  listQueuedPushes(): QueuedPush[];
+  // After a failed attempt: when to try again (null: wait for the user).
+  deferPush(projectId: ProjectId, attempts: number, nextAttemptAt: IsoTimestamp | null): void;
+  dequeuePush(projectId: ProjectId): void;
+
   // The preview cache's index (TECH_STACK §6.1: an explicit cache table,
   // rebuildable from Git and the render settings). A row that can't be read
   // back is dropped and reported as absent: it is a cache, not state.
@@ -85,6 +115,31 @@ export interface LocalStore {
   deletePreview(projectId: ProjectId, key: string): void;
   // Every cached preview, least recently used first.
   listPreviews(): PreviewCacheEntry[];
+}
+
+export interface StoredRemote {
+  projectId: ProjectId;
+  remote: RemoteBinding;
+  // The remote branch's commit as last fetched or pushed.
+  remoteTip: GitOid | null;
+  lastCheckAt: IsoTimestamp | null;
+  lastPushAt: IsoTimestamp | null;
+  lastError: SyncError | null;
+}
+
+export interface RemoteStateChange {
+  remoteTip?: GitOid | null;
+  lastCheckAt?: IsoTimestamp;
+  lastPushAt?: IsoTimestamp;
+  lastError?: SyncError | null;
+}
+
+export interface QueuedPush {
+  projectId: ProjectId;
+  requestedAt: IsoTimestamp;
+  attempts: number;
+  // null: waiting for the user (sign in, resolve divergence).
+  nextAttemptAt: IsoTimestamp | null;
 }
 
 export interface PreviewCacheEntry {
@@ -140,7 +195,8 @@ export interface OperationFile {
 
 export interface StoredPlan {
   planId: PlanId;
-  projectId: ProjectId;
+  // null for opening a project from GitHub: it has no project yet.
+  projectId: ProjectId | null;
   createdAt: IsoTimestamp;
   expiresAt: IsoTimestamp;
   fingerprint: string;
@@ -170,6 +226,74 @@ export interface CorePorts {
   host: ProjectHost;
   // Without them previews answer PREVIEW_FAILED (no-renderer).
   previews?: PreviewPorts;
+  // Without it sign-in is unavailable and projects can't be synced.
+  remote?: RemoteProvider;
+}
+
+// ---- GitHub (M1 plan §10, implemented by @draft-tide/remote-github)
+//
+// The provider owns sign-in and the token. Core never sees a token: it gets
+// repositories, the account, and for each Git network operation a GitAccess
+// whose credential only git-backend reads.
+
+export type AccountState = { state: 'signed-out' } | { state: 'signed-in' | 'expired'; user: GitHubUser };
+
+export interface DeviceLogin {
+  // Names this login to pollLogin; opaque to core.
+  handle: string;
+  userCode: string;
+  verificationUri: string;
+  expiresAt: IsoTimestamp;
+  intervalMs: number;
+}
+
+// pending: ask again after intervalMs (GitHub's slow_down raises it).
+// Failures to reach GitHub throw (NETWORK_UNAVAILABLE).
+export type LoginPoll =
+  | { status: 'pending'; intervalMs: number }
+  | { status: 'completed'; user: GitHubUser }
+  | { status: 'expired' }
+  | { status: 'denied' };
+
+// One Git network operation's credential. Only git-backend reveals it, into
+// the operation's 0600 askpass file.
+export interface GitCredential {
+  readonly username: string;
+  reveal(): string;
+}
+
+export interface GitAccess {
+  // The repository's address, built from its owner and name by the provider.
+  url: string;
+  credential: GitCredential | null;
+  // Plain http: only the development builds' test GitHub on loopback.
+  allowHttp: boolean;
+}
+
+export interface RemoteProvider {
+  // Why this build or computer can't sign in; null when it can.
+  readonly unavailable: 'no-client-id' | 'no-keychain' | null;
+  readonly links: GitHubLinks | null;
+  // From the keychain; never the network.
+  account(): Promise<AccountState>;
+  beginLogin(signal?: AbortSignal): Promise<DeviceLogin>;
+  pollLogin(handle: string, signal?: AbortSignal): Promise<LoginPoll>;
+  forgetLogin(handle: string): void;
+  // Removes the token from the keychain.
+  signOut(): Promise<void>;
+  // The repositories the app is installed on that the user can reach
+  // (AUTH_REQUIRED when signed out or expired).
+  listRepos(signal?: AbortSignal): Promise<RemoteRepoList>;
+  // One repository, which must be among them (REMOTE_REJECTED
+  // app-not-installed otherwise): only the user's own synced repositories can
+  // be connected or opened. For push the user's role must allow pushing too
+  // (REMOTE_REJECTED no-push-access).
+  getRepo(ref: RepoRef, purpose: 'push' | 'open', signal?: AbortSignal): Promise<GitHubRepo>;
+  // A credential for one Git network operation on this repository, refreshed
+  // first when it is about to expire (never during the operation). refused:
+  // Git just refused this access's token; it is refreshed if it is still the
+  // current one (AUTH_REQUIRED expired when that fails).
+  gitAccess(ref: RepoRef, signal?: AbortSignal, refused?: GitAccess): Promise<GitAccess>;
 }
 
 // ---- Previews (M1 plan §8, TECH_STACK §10)
@@ -270,6 +394,22 @@ export interface ProjectHost {
   // Removes what operations of this project left in the data directory,
   // except for the ones named.
   clearOperationData(projectId: ProjectId, keep: ReadonlySet<OperationId>): Promise<void>;
+  // The remote's branches and their commits (`ls-remote`), without a project
+  // repo (opening from GitHub).
+  remoteHeads(access: GitAccess, signal?: AbortSignal): Promise<Map<string, GitOid>>;
+  // Whether a folder exists, and if so whether it is empty. For opening from
+  // GitHub: the folder must be absent (with an existing parent) or empty.
+  // INVALID_ARGUMENT for a relative path, LOCAL_ROOT_UNAVAILABLE without a
+  // parent folder, REPO_UNSUPPORTED (overlaps-app-data).
+  inspectDestination(path: string): Promise<{ path: string; exists: boolean; empty: boolean }>;
+  // Creates the folder (0755) if it doesn't exist; refuses one that isn't
+  // empty (UNTRACKED_FILES). Returns its canonical path and whether it was
+  // created.
+  prepareDestination(path: string): Promise<{ root: string; created: boolean }>;
+  // Undoes an open that failed before its first file: removes the `.git` it
+  // created (only while the folder holds nothing else), and the folder itself
+  // when it created that too and it is empty.
+  removeFreshRepo(root: string, removeFolder: boolean): Promise<void>;
 }
 
 // ---- Git: the project's own repo (implemented by @draft-tide/git-backend)
@@ -412,8 +552,9 @@ export interface PublishRequest {
 }
 
 export interface GitHistory {
-  // `git init` for a plain folder: empty template (no hooks), branch `main`.
-  init(signal?: AbortSignal): Promise<void>;
+  // `git init` for a plain folder: empty template (no hooks), branch `main`
+  // unless given.
+  init(signal?: AbortSignal, options?: { branch?: string }): Promise<void>;
 
   // Writes these files' bytes as blobs, unfiltered, in order. onWritten
   // reports each one as Git finishes it.
@@ -456,8 +597,57 @@ export interface GitHistory {
   isAncestor(ancestor: GitOid, descendant: GitOid, signal?: AbortSignal): Promise<boolean>;
 }
 
+// ---- Git: the network (M1 plan §10.3–10.5, implemented by @draft-tide/git-backend)
+//
+// Every network operation runs in an ephemeral empty git dir that borrows the
+// project's object store, so nothing in the repo's own config (insteadOf,
+// proxies, credential helpers, extra headers) can redirect it or see the
+// token. Only refs/remotes/draft-tide/* and objects are written here.
+
+export interface PushObject {
+  oid: GitOid;
+  type: 'commit' | 'tree' | 'blob' | 'tag';
+  // A path the object appears at (blobs and trees), as Git names it.
+  path: string | null;
+  size: number;
+}
+
+export interface GitRemote {
+  // The remote's branches and their commits.
+  remoteHeads(access: GitAccess, signal?: AbortSignal): Promise<Map<string, GitOid>>;
+  // Fetches refs/heads/<branch> into refs/remotes/draft-tide/<branch>.
+  // Returns its commit; null when the remote has no such branch.
+  fetchBranch(
+    access: GitAccess,
+    branch: string,
+    options?: { signal?: AbortSignal; haves?: readonly GitOid[] },
+  ): Promise<GitOid | null>;
+  // Pushes commit to refs/heads/<branch>, fast-forward only (no `+`, no
+  // force), then records it in the tracking ref. REMOTE_DIVERGED when the
+  // remote has commits this one doesn't contain, REMOTE_REJECTED when it
+  // refuses (with a reason), AUTH_REQUIRED, NETWORK_UNAVAILABLE.
+  pushBranch(access: GitAccess, branch: string, commit: GitOid, signal?: AbortSignal): Promise<{ created: boolean }>;
+  // refs/remotes/draft-tide/<branch>, or null.
+  trackingTip(branch: string): Promise<GitOid | null>;
+  // Forgets it (connecting another repository, disconnecting). A fetch that
+  // finds no such branch forgets it too.
+  clearTracking(branch: string): Promise<void>;
+  // Objects reachable from tip and not from any of exclude: what a push sends.
+  objectsToPush(tip: GitOid, exclude: readonly GitOid[], signal?: AbortSignal): Promise<PushObject[]>;
+  // Commits reachable from tip and not from any of exclude, newest first.
+  commitsBetween(tip: GitOid, exclude: readonly GitOid[], signal?: AbortSignal): Promise<GitOid[]>;
+  // A common ancestor of two commits, or null when their histories are
+  // unrelated.
+  mergeBase(a: GitOid, b: GitOid, signal?: AbortSignal): Promise<GitOid | null>;
+  // `remote.origin.url` from the repo's own config file (never followed).
+  readOrigin(): Promise<string | null>;
+  // Sets `remote.origin.url` and its fetch refspec, for other Git tools. The
+  // address of a GitAccess (https, or the test GitHub's loopback http).
+  setOrigin(url: string): Promise<void>;
+}
+
 // The design repo, as git-backend opens it.
-export type ProjectGit = GitRepo & GitHistory;
+export type ProjectGit = GitRepo & GitHistory & GitRemote;
 
 // ---- Filesystem: the bound folder (implemented by @draft-tide/adapter-filesystem)
 
