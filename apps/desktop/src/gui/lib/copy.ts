@@ -5,6 +5,10 @@ import type {
   ErrorCode,
   FolderState,
   Origin,
+  PreviewBlockedKind,
+  PreviewFailedReason,
+  PreviewMissingReason,
+  PreviewUnsupportedReason,
   RecoveryReason,
   RepoBlocker,
   RepoBusyReason,
@@ -83,6 +87,8 @@ export const ERROR_COPY: Partial<Record<ErrorCode, Copy>> = {
   GIT_FAILED: { title: 'Git 操作失敗', next: '歷史沒有被改寫。請重試；若仍發生請匯出診斷資訊。' },
   INVALID_ARGUMENT: { title: '無法處理這個要求', next: '請重新操作一次。' },
   RESOURCE_BUDGET_EXCEEDED: { title: '內容太多，無法在這裡顯示', next: '原始檔案與版本不受影響。' },
+  PREVIEW_UNSUPPORTED: { title: '這個版本沒有可以預覽的畫面', next: '版本本身不受影響。' },
+  PREVIEW_FAILED: { title: '無法產生預覽', next: '版本本身不受影響，可以再試一次。' },
 };
 
 // Reason-specific copy where the code alone isn't enough.
@@ -292,6 +298,50 @@ export const RECOVERY_STAGE_LABEL: Record<string, string> = {
   apply: '寫入檔案…',
   verify: '確認寫入的內容…',
   publish: '記錄回復版本…',
+};
+
+// ---- Previews (M1 plan §8). A preview that can't be made never says
+// anything about the version itself.
+
+export const PREVIEW_UNSUPPORTED_COPY: Record<PreviewUnsupportedReason, string> = {
+  'no-settings': '這個版本沒有專案設定檔（.drafttide.json），不知道要預覽哪一頁。',
+  'settings-invalid': '這個版本的專案設定檔無法讀取，不知道要預覽哪一頁。',
+  'no-entry': '這個版本沒有設定預覽頁面（entry）。',
+  'entry-missing': '設定的預覽頁面不在這個版本裡。',
+  'entry-type': '預覽頁面不是 HTML 網頁，也不是 PNG / JPEG 圖片。',
+  'file-missing': '這個檔案不在這個版本裡。',
+  'file-type': '只有 PNG 與 JPEG 圖片能預覽。',
+  'not-a-file': '這是捷徑或子模組，無法預覽。',
+  'image-invalid': '這不是 Draft Tide 能讀取的 PNG 或 JPEG 圖片。',
+  'image-too-large': '圖片太大，不在這裡預覽。原始檔案不受影響。',
+};
+
+export const PREVIEW_FAILED_COPY: Record<PreviewFailedReason, string> = {
+  'no-renderer': '這個 Draft Tide 沒有可用的預覽程式。',
+  'queue-full': '等待預覽的工作太多。',
+  timeout: '頁面在時間內沒有完成載入（例如腳本一直在執行）。',
+  crashed: '預覽程式意外停止了。',
+  'load-failed': '頁面無法載入。',
+  'capture-failed': '頁面載入了，但沒有取得畫面。',
+  'invalid-output': '預覽程式產生的圖片不正確。',
+  'renderer-mismatch': '預覽程式的版本和預期不同。重新開啟 Draft Tide 後再試。',
+};
+
+export const PREVIEW_MISSING_COPY: Record<PreviewMissingReason, string> = {
+  'not-in-version': '版本裡沒有這個檔案',
+  'not-a-file': '不是一般檔案',
+  type: '預覽不提供這種檔案',
+  'too-large': '檔案太大',
+  budget: '超過這次預覽的讀取上限',
+  'invalid-path': '不是專案內的路徑',
+};
+
+export const PREVIEW_BLOCKED_COPY: Record<PreviewBlockedKind, string> = {
+  network: '網路連線',
+  navigation: '跳到其他頁面',
+  popup: '開新視窗',
+  permission: '要求權限',
+  download: '下載',
 };
 
 // ---- Restore and recovery (M1 plan §9.2–9.4)

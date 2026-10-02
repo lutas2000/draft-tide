@@ -1,8 +1,28 @@
 import { join } from 'node:path';
-import { errorEnvelope, okEnvelope, type Envelope } from '@draft-tide/contracts';
+import { fileURLToPath } from 'node:url';
+import {
+  PREVIEW_HOST_ENV,
+  errorEnvelope,
+  okEnvelope,
+  previewRendererId,
+  type Envelope,
+  type PreviewHostLaunch,
+} from '@draft-tide/contracts';
 import { connectEngine, type EngineConnection, type EngineLaunch } from '@draft-tide/engine-client';
 import type { BridgeEvent, ConnectionState } from '../shared/bridge.ts';
 import { BUILD } from './build-info.ts';
+
+// Development and e2e builds: the Engine's Preview Host is this same
+// Electron and Main bundle, started with --dt-preview-host. (Main is one
+// bundle, so this module's URL is the bundle's.) Release builds: M1-09 gives
+// the Preview Host its place, and its own signing identity, in the app bundle.
+function previewHost(): PreviewHostLaunch {
+  return {
+    command: process.execPath,
+    args: [fileURLToPath(import.meta.url)],
+    renderer: previewRendererId(process.versions.electron, process.versions.chrome),
+  };
+}
 
 function launch(): EngineLaunch {
   if (BUILD.companion) {
@@ -12,7 +32,7 @@ function launch(): EngineLaunch {
     return {
       nodePath: BUILD.companion.nodePath,
       engineEntry: BUILD.companion.engineEntry,
-      ...(git ? { env: { DRAFT_TIDE_GIT: git } } : {}),
+      env: { ...(git ? { DRAFT_TIDE_GIT: git } : {}), [PREVIEW_HOST_ENV]: JSON.stringify(previewHost()) },
     };
   }
   // Packaged layout (M1-09): the bundled Node and the companion bundle sit in
