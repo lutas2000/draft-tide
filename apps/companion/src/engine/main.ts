@@ -19,6 +19,8 @@ import { openLocalStore, tryAcquireEngineLock } from '@draft-tide/local-store';
 import { BUILD } from '../build-info.ts';
 import { createProjectHost, engineGitRuntime } from './host.ts';
 import { createPeerVerifier } from './peer-identity.ts';
+import { createPreviewSupervisor, previewHostLaunch } from './preview-host.ts';
+import { createPreviewImageStore } from './preview-images.ts';
 import { createEngineServer, type EngineServer } from './server.ts';
 
 process.umask(0o077);
@@ -68,6 +70,13 @@ try {
 const verifier = createPeerVerifier(BUILD.desktopRequirement, log);
 const git = engineGitRuntime(BUILD, dataDir);
 if (!git) log('no Git available: projects can be listed but not reviewed, saved or read');
+// Previews: the time zone pages see is the computer's own (recorded with each
+// preview). Without a Preview Host, previews answer PREVIEW_FAILED
+// (no-renderer) and everything else works.
+const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+const previewLaunch = previewHostLaunch(BUILD);
+const previewSupervisor = createPreviewSupervisor({ launch: previewLaunch, timezone, log });
+if (!previewLaunch) log('no Preview Host: previews are unavailable');
 const toolToken = randomBytes(32).toString('base64url');
 const startedAt = new Date().toISOString();
 let server: EngineServer | null = null;
@@ -105,6 +114,7 @@ const core = createEngineCore(
       git,
       ...(testHooks ? { gitTestHooks: { afterRefUpdate: () => checkpoint('publish:after-ref') } } : {}),
     }),
+    previews: { renderer: previewSupervisor, images: createPreviewImageStore(dataDir), timezone },
   },
   testHooks ? { testHooks } : {},
 );
@@ -173,6 +183,7 @@ function shutdown(reason: string, code = 0): void {
   if (stopping) return;
   stopping = true;
   log(`stopping: ${reason}`);
+  previewSupervisor.stop();
   server?.server.close();
   try {
     const current = JSON.parse(readFileSync(paths.discoveryFile, 'utf8')) as { instanceId?: string };

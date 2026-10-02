@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PREVIEW_HOST_ENV } from '@draft-tide/contracts';
 import type { EngineLaunch } from '@draft-tide/engine-client';
 import { BUILD } from './build-info.ts';
 
@@ -18,5 +19,8 @@ export function engineLaunch(): EngineLaunch {
   // Development builds may run another Git; release builds only the bundled one.
   const git = process.env['DRAFT_TIDE_GIT'];
   if (git && BUILD.mode === 'development') env['DRAFT_TIDE_GIT'] = git;
+  // So may their Engine's Preview Host (the desktop app passes its own).
+  const previewHost = process.env[PREVIEW_HOST_ENV];
+  if (previewHost && BUILD.mode === 'development') env[PREVIEW_HOST_ENV] = previewHost;
   return { nodePath: process.execPath, engineEntry, env };
 }
