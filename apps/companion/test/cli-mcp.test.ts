@@ -83,6 +83,8 @@ describe('MCP server', () => {
     const client = await mcpClient(tempDataDir());
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
+      'auth_login_request',
+      'auth_status',
       'engine_info',
       'history_list',
       'operation_cancel',
@@ -95,21 +97,33 @@ describe('MCP server', () => {
       'recovery_apply',
       'recovery_inspect',
       'recovery_plan',
+      'remote_connect_request',
+      'remote_open_apply',
+      'remote_open_plan',
+      'remote_status',
       'restore_apply',
       'restore_plan',
       'snapshot_create',
       'snapshot_diff',
       'snapshot_diff_file',
       'snapshot_preview',
+      'sync_pull_apply',
+      'sync_pull_plan',
+      'sync_push',
     ]);
-    // Connecting a folder is the GUI's alone (the tool can only ask). Restore
-    // and recovery apply overwrite files and say so; plans only read.
-    const destructive = ['restore_apply', 'recovery_apply'];
+    // Connecting a folder, signing in and connecting a repository are the
+    // GUI's alone (the tool can only ask). Restore, recovery and pull apply
+    // overwrite files and say so; plans only read.
+    const destructive = ['restore_apply', 'recovery_apply', 'sync_pull_apply'];
     const writes = [
       'snapshot_create',
       'operation_cancel',
       'project_connect_request',
       'project_restore_settings',
+      'auth_login_request',
+      'remote_connect_request',
+      'sync_push',
+      'remote_open_apply',
       ...destructive,
     ];
     for (const t of tools) {
@@ -120,6 +134,7 @@ describe('MCP server', () => {
     }
     expect(client.getInstructions()).toMatch(/AGENT_ACCESS_DISABLED/);
     expect(client.getInstructions()).toMatch(/preview_read/);
+    expect(client.getInstructions()).toMatch(/REMOTE_DIVERGED/);
     await client.close();
   });
 
