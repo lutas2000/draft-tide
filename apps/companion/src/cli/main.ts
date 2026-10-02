@@ -10,6 +10,8 @@ import {
   errorEnvelope,
   exitCodeFor,
   okEnvelope,
+  parseRepoRef,
+  type AuthStatus,
   type Envelope,
   type ErrorCode,
   type CommitRef,
@@ -22,13 +24,19 @@ import {
   type PreviewArtifact,
   type PreviewChunk,
   type ProjectStatus,
+  type PushResult,
   type RecoveryPlan,
   type RecoveryReport,
   type RecoveryResult,
   type RestorePlan,
+  type RemoteOpenPlan,
+  type RemoteOpenResult,
   type RestoreResult,
   type SavedSnapshot,
   type SnapshotDiff,
+  type SyncPullPlan,
+  type SyncPullResult,
+  type SyncStatus,
   type VersionInfo,
 } from '@draft-tide/contracts';
 import { connectEngine, type EngineConnection } from '@draft-tide/engine-client';
@@ -58,6 +66,13 @@ const HINTS: Partial<Record<ErrorCode, string>> = {
   CANCELLED: 'The operation was cancelled before it changed anything.',
   PREVIEW_UNSUPPORTED: 'This version has nothing Draft Tide can preview (see details.reason). The version is fine.',
   PREVIEW_FAILED: 'The preview could not be made (see details.reason). The version is fine.',
+  AUTH_REQUIRED:
+    'Sign in to GitHub in the Draft Tide app (`draft-tide auth login request` asks the user). Everything local still works.',
+  REMOTE_DIVERGED:
+    'GitHub and this folder both have new versions. Nothing was changed on either side; the user decides what to do in the app.',
+  REMOTE_REJECTED: 'GitHub refused (see details.reason). Nothing local was changed.',
+  NETWORK_UNAVAILABLE: 'GitHub could not be reached. Your versions are safe here; try again later.',
+  UNSAVED_CHANGES: 'Save a version first (`snapshot`), then get the updates.',
 };
 
 // Text from Git or file names, safe to print on a terminal: no escape
@@ -214,6 +229,90 @@ function renderRestoreResult(r: RestoreResult): string {
   ].join('\n');
 }
 
+function renderAuth(a: AuthStatus): string {
+  const lines: string[] = [];
+  if (a.state === 'unavailable')
+    lines.push(`GitHub sign-in is not available in this copy of Draft Tide (${a.unavailableReason ?? ''}).`);
+  else if (a.state === 'signed-out') lines.push('Not signed in to GitHub.');
+  else if (a.state === 'signing-in') lines.push('Signing in to GitHub: waiting for the user in the Draft Tide app.');
+  else if (a.user) {
+    const who = `${a.user.login}${a.user.name ? ` (${safe(a.user.name)})` : ''}`;
+    lines.push(
+      a.state === 'expired'
+        ? `The GitHub sign-in of ${who} expired: sign in again in the app.`
+        : `Signed in to GitHub as ${who}.`,
+    );
+  }
+  lines.push(`New versions are saved as: ${safe(a.identity.name)} <${a.identity.email}>`);
+  return `${lines.join('\n')}\n`;
+}
+
+function renderSyncStatus(s: SyncStatus): string {
+  if (!s.remote) return 'Not connected to a GitHub repository (connect one in the Draft Tide app). No off-site copy.\n';
+  const lines = [
+    `GitHub: ${s.remote.owner}/${s.remote.name} (${s.remote.visibility}), branch ${s.remote.branch}`,
+    `State: ${s.state}${s.ahead !== null ? `, ${s.ahead} to push` : ''}${s.behind !== null ? `, ${s.behind} to get` : ''}`,
+  ];
+  if (s.lastPushAt) lines.push(`Last push: ${s.lastPushAt}`);
+  if (s.lastCheckAt) lines.push(`Last checked: ${s.lastCheckAt}`);
+  if (s.lastError)
+    lines.push(
+      `Last problem: ${s.lastError.code}${s.lastError.reason ? ` (${s.lastError.reason})` : ''}: ${safe(s.lastError.message)}`,
+    );
+  if (s.nextAttemptAt) lines.push(`Next try: ${s.nextAttemptAt}`);
+  return `${lines.join('\n')}\n`;
+}
+
+function renderPush(r: PushResult): string {
+  return r.outcome === 'pushed'
+    ? `Pushed ${r.commits} commit(s) to GitHub (now at ${r.commit}).\n`
+    : `GitHub already has everything (${r.commit}).\n`;
+}
+
+function renderPullPlan(p: SyncPullPlan): string {
+  const lines = [`Plan: ${p.planId} (valid until ${p.expiresAt})`, `Relation to GitHub: ${p.relation}`];
+  if (p.target) {
+    const s = p.summary;
+    lines.push(
+      `Get ${p.incoming} commit(s), up to ${versionText(p.target)}`,
+      `Changes: ${s.overwrite} overwritten, ${s.add} added, ${s.delete} deleted, ${s.unchanged} unchanged`,
+    );
+  }
+  if (p.unsavedChanges > 0) lines.push(`Unsaved changes: ${p.unsavedChanges} file(s). Save a version first.`);
+  for (const c of p.collisions.entries) lines.push(`In the way (${c.reason}): ${safe(c.path)}`);
+  if (p.noop) lines.push('Nothing to get.');
+  if (p.blocked)
+    lines.push(`Applying would refuse now: ${p.blocked.code}${p.blocked.reason ? ` (${p.blocked.reason})` : ''}`);
+  let out = `${lines.join('\n')}\n`;
+  const mark = { overwrite: 'M', add: 'A', delete: 'D' } as const;
+  out += p.changes.map((c) => `  ${mark[c.change]}  ${safe(c.path)}\n`).join('');
+  if (p.truncated) out += '  … (list cut short)\n';
+  return out;
+}
+
+function renderPullResult(r: SyncPullResult): string {
+  return `Got the updates: now at ${refText(r.to)} (${r.written} written, ${r.deleted} deleted).\n`;
+}
+
+function renderOpenPlan(p: RemoteOpenPlan): string {
+  const lines = [
+    `Plan: ${p.planId} (valid until ${p.expiresAt})`,
+    `Open ${p.repo.owner}/${p.repo.name} (${p.repo.visibility}), branch ${p.branch}${p.tip ? ` at ${p.tip}` : ''}`,
+    `Into: ${safe(p.destination.path)}${p.destination.exists ? ' (an empty folder)' : ' (a new folder)'}`,
+  ];
+  if (p.blocked)
+    lines.push(`Applying would refuse now: ${p.blocked.code}${p.blocked.reason ? ` (${p.blocked.reason})` : ''}`);
+  return `${lines.join('\n')}\n`;
+}
+
+function renderOpenResult(r: RemoteOpenResult): string {
+  return [
+    `Opened ${safe(r.project.name)} (${r.project.projectId}) into ${safe(r.project.root)}: ${r.files} files.`,
+    `Newest version: ${refText(r.tip)}`,
+    '',
+  ].join('\n');
+}
+
 function renderOperation(o: OperationStatus): string {
   const lines = [`${o.operationId}  ${o.kind}  ${o.state}  (${o.origin}, ${o.updatedAt})`];
   if (o.error) lines.push(`  ${o.error.code}: ${safe(o.error.message)}`);
@@ -229,6 +328,16 @@ function renderOperation(o: OperationStatus): string {
     lines.push(`  folder: ${safe(o.request.root)}`);
     if (o.project) lines.push(`  connected as project ${o.project.projectId}`);
   }
+  if (o.kind === 'pull') lines.push(`  from ${refText(o.from)} to ${refText(o.target)}`);
+  if (o.kind === 'open') {
+    lines.push(`  ${o.repo.owner}/${o.repo.name} into ${safe(o.root)}`);
+    if (o.project) lines.push(`  project ${o.project.projectId}`);
+  }
+  if ((o.kind === 'pull' || o.kind === 'open') && o.conflicts.count > 0) {
+    lines.push(`  left as other programs wrote them: ${o.conflicts.sample.map(safe).join(', ')}`);
+  }
+  if (o.kind === 'login-request' && o.user) lines.push(`  signed in as ${o.user.login}`);
+  if (o.kind === 'remote-connect-request' && o.remote) lines.push(`  connected to ${o.remote.owner}/${o.remote.name}`);
   return `${lines.join('\n')}\n`;
 }
 
@@ -557,6 +666,85 @@ recover
   .action((planId: string) =>
     run('recovery.apply', () => ({ projectId: requireProject(), planId }), renderRecoveryResult),
   );
+
+// GitHub (M1 plan §10): signing in and connecting a repository happen only in
+// the app. The CLI reads who is signed in, asks the user, and syncs projects
+// the user connected.
+const auth = program.command('auth').description('GitHub sign-in (done by the user in the app)');
+auth
+  .command('status')
+  .description('Whether Draft Tide is signed in to GitHub, and as whom')
+  .action(() => run('auth.status', {}, renderAuth));
+auth
+  .command('login')
+  .description('Signing in')
+  .command('request')
+  .description('Ask the user to sign in to GitHub in the Draft Tide app (answers CONFIRMATION_REQUIRED)')
+  .action(() => run('auth.loginRequest', {}, () => ''));
+
+const remote = program.command('remote').description("A project's GitHub repository");
+remote
+  .command('status')
+  .description('Sync state with GitHub (needs --project)')
+  .option('--refresh', 'ask GitHub now instead of reporting the last check')
+  .action((options: { refresh?: boolean }) =>
+    run(
+      'remote.status',
+      () => ({ projectId: requireProject(), ...(options.refresh ? { refresh: true } : {}) }),
+      renderSyncStatus,
+    ),
+  );
+remote
+  .command('connect')
+  .description('Connecting a repository (done by the user in the app)')
+  .command('request')
+  .description(
+    'Ask the user to connect the project to a GitHub repository (needs --project; answers CONFIRMATION_REQUIRED)',
+  )
+  .action(() =>
+    run(
+      'remote.connectRequest',
+      () => ({ projectId: requireProject() }),
+      () => '',
+    ),
+  );
+const open = remote.command('open').description('Opening a project from GitHub into an empty folder: plan, then apply');
+
+function repoOption(value: string) {
+  const ref = parseRepoRef(value);
+  if (!ref) throw new InvalidArgumentError('must be owner/name or https://github.com/owner/name');
+  return ref;
+}
+
+open
+  .command('plan')
+  .description('Check the repository and the folder (which must not exist yet, or be empty); prints a plan id')
+  .requiredOption('--url <repo>', 'owner/name or https://github.com/owner/name', repoOption)
+  .requiredOption('--destination <folder>', 'a folder that does not exist yet, or an empty one')
+  .action((options: { url: { owner: string; name: string }; destination: string }) =>
+    run('remote.openPlan', { repo: options.url, destination: resolve(options.destination) }, renderOpenPlan),
+  );
+open
+  .command('apply')
+  .description('Apply an open plan: fetch, write the files into the folder, connect the project')
+  .argument('<plan-id>', 'from `remote open plan`')
+  .action((planId: string) => run('remote.openApply', { planId }, renderOpenResult));
+
+const sync = program.command('sync').description('Pushing to and getting from GitHub (needs --project)');
+sync
+  .command('push')
+  .description("Push the project's new versions to GitHub now (fast-forward only)")
+  .action(() => run('sync.push', () => ({ projectId: requireProject() }), renderPush));
+const pull = sync.command('pull').description('Getting newer versions from GitHub: plan, then apply');
+pull
+  .command('plan')
+  .description('Check GitHub for newer versions and what getting them would change; prints a plan id')
+  .action(() => run('sync.pullPlan', () => ({ projectId: requireProject() }), renderPullPlan));
+pull
+  .command('apply')
+  .description('Apply a pull plan (fast-forward only; refuses with unsaved changes)')
+  .argument('<plan-id>', 'from `sync pull plan`')
+  .action((planId: string) => run('sync.pullApply', () => ({ projectId: requireProject(), planId }), renderPullResult));
 
 const operation = program.command('operation').description('Following an operation or a request');
 operation

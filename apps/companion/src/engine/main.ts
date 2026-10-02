@@ -15,9 +15,11 @@ import { join } from 'node:path';
 import { EngineInstanceId, PROTOCOL_VERSION, type Discovery, type EngineEvent } from '@draft-tide/contracts';
 import { createEngineCore } from '@draft-tide/core';
 import { resolveDataDir, runtimePaths } from '@draft-tide/engine-client';
+import { sweepNetworkDirs } from '@draft-tide/git-backend';
 import { openLocalStore, tryAcquireEngineLock } from '@draft-tide/local-store';
 import { BUILD } from '../build-info.ts';
-import { createProjectHost, engineGitRuntime } from './host.ts';
+import { createEngineGitHub } from './github.ts';
+import { createProjectHost, engineGitRuntime, networkTmpDir } from './host.ts';
 import { createPeerVerifier } from './peer-identity.ts';
 import { createPreviewSupervisor, previewHostLaunch } from './preview-host.ts';
 import { createPreviewImageStore } from './preview-images.ts';
@@ -70,6 +72,14 @@ try {
 const verifier = createPeerVerifier(BUILD.desktopRequirement, log);
 const git = engineGitRuntime(BUILD, dataDir);
 if (!git) log('no Git available: projects can be listed but not reviewed, saved or read');
+// A network operation's ephemeral dir holds a token file while it runs; one a
+// killed Engine left behind goes before anything else can run.
+const swept = await sweepNetworkDirs(networkTmpDir(dataDir)).catch(() => 0);
+if (swept > 0) log(`removed ${swept} leftover network dir(s)`);
+// GitHub sign-in and sync (M1-07). Without a client ID or a keychain, sign-in
+// is unavailable and everything local works.
+const remote = createEngineGitHub({ build: BUILD, storeId: store.storeId(), log });
+if (remote.unavailable) log(`GitHub sign-in unavailable (${remote.unavailable})`);
 // Previews: the time zone pages see is the computer's own (recorded with each
 // preview). Without a Preview Host, previews answer PREVIEW_FAILED
 // (no-renderer) and everything else works.
@@ -115,6 +125,7 @@ const core = createEngineCore(
       ...(testHooks ? { gitTestHooks: { afterRefUpdate: () => checkpoint('publish:after-ref') } } : {}),
     }),
     previews: { renderer: previewSupervisor, images: createPreviewImageStore(dataDir), timezone },
+    remote,
   },
   testHooks ? { testHooks } : {},
 );
@@ -183,6 +194,7 @@ function shutdown(reason: string, code = 0): void {
   if (stopping) return;
   stopping = true;
   log(`stopping: ${reason}`);
+  core.stop();
   previewSupervisor.stop();
   server?.server.close();
   try {
@@ -199,7 +211,15 @@ function shutdown(reason: string, code = 0): void {
 
 setInterval(
   () => {
-    if (server && server.sessionCount() === 0 && server.inFlight() === 0 && Date.now() - lastActivity > IDLE_MS)
+    // A push due soon keeps the Engine up (M1 plan §10.3); one further off
+    // runs at the next start.
+    if (
+      server &&
+      server.sessionCount() === 0 &&
+      server.inFlight() === 0 &&
+      !core.busy() &&
+      Date.now() - lastActivity > IDLE_MS
+    )
       shutdown('idle');
   },
   Math.min(1000, IDLE_MS),

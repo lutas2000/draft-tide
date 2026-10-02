@@ -1,9 +1,11 @@
 // Builds the companion into dist/: engine.mjs and cli.mjs (esbuild bundles for
-// the bundled Node) and, on macOS, native/peer-identity.node.
+// the bundled Node) and, on macOS, native/peer-identity.node and
+// native/keychain.node.
 //
 //   node scripts/build.ts                 development build
 //   DT_BUILD_MODE=release DT_DESKTOP_APP_ID=<bundle id> DT_TEAM_ID=<team> \
-//     DT_APP_VERSION=<semver> node scripts/build.ts
+//     DT_APP_VERSION=<semver> [DT_GITHUB_CLIENT_ID=<id> DT_GITHUB_APP_SLUG=<slug>] \
+//     node scripts/build.ts
 //
 // The release requirement is the Developer ID form verified in the
 // desktop-auth spike: identifier and team pinned, plus the Developer ID
@@ -13,7 +15,7 @@ import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
-import type { BuildInfo } from '../src/build-info.ts';
+import { DEV_GITHUB_APP, type BuildInfo } from '../src/build-info.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -32,7 +34,12 @@ export function releaseRequirement(appId: string, teamId: string): string {
 function buildInfo(): BuildInfo {
   const mode = process.env['DT_BUILD_MODE'] ?? 'development';
   if (mode === 'development')
-    return { mode, appVersion: process.env['DT_APP_VERSION'] ?? '0.0.0-dev', desktopRequirement: null };
+    return {
+      mode,
+      appVersion: process.env['DT_APP_VERSION'] ?? '0.0.0-dev',
+      desktopRequirement: null,
+      github: { ...DEV_GITHUB_APP },
+    };
   if (mode !== 'release') throw new Error(`unknown DT_BUILD_MODE: ${mode}`);
   // Windows and Linux have no verified desktop identity yet (CLAUDE.md).
   if (process.platform !== 'darwin')
@@ -42,42 +49,58 @@ function buildInfo(): BuildInfo {
   const appVersion = process.env['DT_APP_VERSION'];
   if (!appId || !teamId || !appVersion)
     throw new Error('release builds need DT_DESKTOP_APP_ID, DT_TEAM_ID and DT_APP_VERSION');
-  return { mode, appVersion, desktopRequirement: releaseRequirement(appId, teamId) };
+  // Without a release GitHub App the build can't sign in (auth.status says
+  // unavailable, no-client-id); everything local works.
+  const clientId = process.env['DT_GITHUB_CLIENT_ID'] ?? null;
+  const appSlug = process.env['DT_GITHUB_APP_SLUG'] ?? null;
+  if ((clientId === null) !== (appSlug === null))
+    throw new Error('set both DT_GITHUB_CLIENT_ID and DT_GITHUB_APP_SLUG');
+  if (clientId !== null && !/^[A-Za-z0-9.]{8,64}$/.test(clientId)) throw new Error(`invalid client id: ${clientId}`);
+  if (appSlug !== null && !/^[a-z0-9-]{1,100}$/.test(appSlug)) throw new Error(`invalid app slug: ${appSlug}`);
+  return { mode, appVersion, desktopRequirement: releaseRequirement(appId, teamId), github: { clientId, appSlug } };
 }
 
+const ADDONS = [
+  { name: 'peer-identity', source: 'peer-identity.c', module: 'peer_identity', libs: ['-lbsm'] },
+  { name: 'keychain', source: 'keychain.c', module: 'keychain', libs: [] },
+] as const;
+
 // Built with Xcode's clang, no node-gyp: N-API symbols resolve at load time.
-export function buildNative(outDir = join(root, 'dist', 'native')): string | null {
-  if (process.platform !== 'darwin') return null;
+// Returns the addons built (none off macOS).
+export function buildNative(outDir = join(root, 'dist', 'native')): string[] {
+  if (process.platform !== 'darwin') return [];
   const include = [process.env['NODE_INCLUDE'], join(dirname(dirname(process.execPath)), 'include', 'node')].find(
     (d) => d !== undefined && existsSync(join(d, 'node_api.h')),
   );
   if (!include) throw new Error('node_api.h not found; set NODE_INCLUDE to a Node headers directory');
   mkdirSync(outDir, { recursive: true });
-  const out = join(outDir, 'peer-identity.node');
-  execFileSync(
-    '/usr/bin/xcrun',
-    [
-      'clang',
-      '-O2',
-      '-Wall',
-      '-Werror',
-      '-bundle',
-      '-undefined',
-      'dynamic_lookup',
-      '-DNODE_GYP_MODULE_NAME=peer_identity',
-      `-I${include}`,
-      join(root, 'native', 'peer-identity.c'),
-      '-framework',
-      'Security',
-      '-framework',
-      'CoreFoundation',
-      '-lbsm',
-      '-o',
-      out,
-    ],
-    { stdio: 'inherit' },
-  );
-  return out;
+  return ADDONS.map((addon) => {
+    const out = join(outDir, `${addon.name}.node`);
+    execFileSync(
+      '/usr/bin/xcrun',
+      [
+        'clang',
+        '-O2',
+        '-Wall',
+        '-Werror',
+        '-bundle',
+        '-undefined',
+        'dynamic_lookup',
+        `-DNODE_GYP_MODULE_NAME=${addon.module}`,
+        `-I${include}`,
+        join(root, 'native', addon.source),
+        '-framework',
+        'Security',
+        '-framework',
+        'CoreFoundation',
+        ...addon.libs,
+        '-o',
+        out,
+      ],
+      { stdio: 'inherit' },
+    );
+    return out;
+  });
 }
 
 async function main(): Promise<void> {
@@ -102,9 +125,9 @@ async function main(): Promise<void> {
     legalComments: 'linked',
     logLevel: 'warning',
   });
-  const addon = buildNative(join(dist, 'native'));
+  const addons = buildNative(join(dist, 'native'));
   process.stderr.write(
-    `companion ${info.mode} build ${info.appVersion} → ${dist}${addon ? ' (+ peer-identity addon)' : ''}\n`,
+    `companion ${info.mode} build ${info.appVersion} → ${dist}${addons.length > 0 ? ` (+ ${addons.length} addons)` : ''}\n`,
   );
 }
 
