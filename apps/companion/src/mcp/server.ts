@@ -29,6 +29,10 @@ with operation_status until it is completed (the project is in the result), deni
 project_status shows unsaved changes; stop writing files before snapshot_create.
 snapshot_create answers NO_CHANGES (not an error) when the folder equals the newest version.
 history_list gives snapshot ids (permanent) and commit ids; snapshot_diff and snapshot_diff_file compare two of them.
+snapshot_preview renders a version's entry page (or one of its PNG/JPEG files) offline, with the network blocked,
+and returns an artifact: its missing and blocked lists say what the page asked for and didn't get, so the picture
+may differ from what the designer sees online. Read the PNG with preview_read (base64 chunks, until done).
+PREVIEW_UNSUPPORTED and PREVIEW_FAILED are about the preview only; the version itself is fine.
 To restore a version: stop your own writes to the folder, call restore_plan, read its summary, then restore_apply
 with its planId. Unsaved changes are saved as a pre-restore version first; tell the user which version that is.
 PLAN_STALE means files changed since the plan: plan again. UNTRACKED_FILES means files no version holds are in the way.

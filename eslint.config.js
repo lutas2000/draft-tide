@@ -102,7 +102,7 @@ export default tseslint.config(
     rules: restrict([...WRITERS, 'node:child_process']),
   },
   {
-    files: ['apps/desktop/src/main/**', 'apps/desktop/src/preload/**'],
+    files: ['apps/desktop/src/main/**', 'apps/desktop/src/preview-host/**', 'apps/desktop/src/preload/**'],
     rules: restrict([...WRITERS, '@modelcontextprotocol/sdk']),
   },
   {

@@ -15,6 +15,7 @@ import { createProjectContext, type ProjectServiceOptions } from './context.ts';
 import { createOperationService } from './operations.ts';
 import { authorize } from './policy.ts';
 import type { CorePorts } from './ports.ts';
+import { createPreviewService, type PreviewOptions } from './preview.ts';
 import { createProjectService } from './projects.ts';
 import { createRecoveryService } from './recovery.ts';
 import { createRestoreService } from './restore.ts';
@@ -49,14 +50,18 @@ const ORIGIN: Record<Channel, Origin> = { desktop: 'gui', cli: 'cli', mcp: 'mcp'
 
 export function createEngineCore(
   ports: CorePorts,
-  projectOptions: Omit<ProjectServiceOptions, 'store' | 'host' | 'clock' | 'events'> = {},
+  projectOptions: Omit<ProjectServiceOptions, 'store' | 'host' | 'clock' | 'events'> & {
+    previews?: PreviewOptions;
+  } = {},
 ): EngineCore {
   const { clock, store, events, identity, host } = ports;
-  const ctx = createProjectContext({ ...projectOptions, store, host, clock, events });
+  const { previews: previewOptions, ...contextOptions } = projectOptions;
+  const ctx = createProjectContext({ ...contextOptions, store, host, clock, events });
   const recovery = createRecoveryService(ctx);
   const projects = createProjectService(ctx, recovery);
   const restore = createRestoreService(ctx, recovery);
   const operations = createOperationService(ctx);
+  const previews = createPreviewService(ctx, ports.previews, previewOptions);
 
   const handlers: Handlers = {
     'engine.info': (_input, ctx) => ({
@@ -79,15 +84,29 @@ export function createEngineCore(
     },
     'project.status': (input) => projects.status(input.projectId),
     'project.restoreSettings': (input) => projects.restoreSettings(input.projectId),
-    'snapshot.create': (input, ctx) => projects.save(input.projectId, input.name, ORIGIN[ctx.channel]),
+    'snapshot.create': async (input, ctx) => {
+      const saved = await projects.save(input.projectId, input.name, ORIGIN[ctx.channel]);
+      // The history card's thumbnail is made after the save, never as part
+      // of it (M1 plan §7.1 step 9).
+      previews.warm(saved.projectId, saved.snapshotId);
+      return saved;
+    },
     'history.list': (input) => projects.history(input.projectId, { skip: input.skip ?? 0, limit: input.limit ?? 50 }),
     'snapshot.diff': (input) => projects.diff(input.projectId, input.from, input.to),
     'snapshot.diffFile': (input) => projects.diffFile(input.projectId, input.from, input.to, input.path),
     'restore.plan': (input) => restore.plan(input.projectId, input.target),
-    'restore.apply': (input, ctx) => restore.apply(input.projectId, input.planId, ORIGIN[ctx.channel]),
+    'restore.apply': async (input, ctx) => {
+      const result = await restore.apply(input.projectId, input.planId, ORIGIN[ctx.channel]);
+      previews.warm(input.projectId, result.restored.snapshotId ?? result.restored.commit);
+      return result;
+    },
     'recovery.inspect': (input) => recovery.inspect(input.projectId),
     'recovery.plan': (input) => recovery.plan(input.projectId, input.operationId, input.strategy),
     'recovery.apply': (input, ctx) => recovery.apply(input.projectId, input.planId, ORIGIN[ctx.channel]),
+    'snapshot.preview': (input) => previews.preview(input.projectId, input.version, input.file),
+    'preview.read': (input) => previews.read(input.projectId, input.artifactId, input.image, input.offset ?? 0),
+    'preview.status': () => previews.status(),
+    'preview.clearCache': () => previews.clearCache(),
     'operation.status': (input) => operations.status(input.operationId),
     'operation.cancel': (input) => operations.cancel(input.operationId),
     'project.connectRequest': (input, ctx) => operations.requestConnect(input, ORIGIN[ctx.channel]),
@@ -134,6 +153,7 @@ export function createEngineCore(
     async startup() {
       const recovered = await recovery.recoverAll();
       store.prune(new Date(Date.parse(clock.nowIso()) - RETENTION_MS).toISOString());
+      await previews.sweep().catch(() => undefined);
       return { recovered };
     },
   };

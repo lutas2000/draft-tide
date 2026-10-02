@@ -7,6 +7,8 @@ export * from './history.ts';
 export * from './ids.ts';
 export * from './journal.ts';
 export * from './operation.ts';
+export * from './preview.ts';
+export * from './preview-host.ts';
 export * from './project.ts';
 export * from './project-config.ts';
 export * from './protocol.ts';

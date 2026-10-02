@@ -173,6 +173,23 @@ export const Info = (p: IconProps) => (
   </Icon>
 );
 
+export const Picture = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="3.5" y="5" width="17" height="14" rx="2" />
+    <circle cx="9" cy="10" r="1.6" />
+    <path d="m4 17 5-4.5 3.5 3 3-2.5 4.5 4" />
+  </Icon>
+);
+
+export const Expand = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M14 4.5h5.5V10" />
+    <path d="M10 19.5H4.5V14" />
+    <path d="m19.5 4.5-6 6" />
+    <path d="m4.5 19.5 6-6" />
+  </Icon>
+);
+
 export const Spinner = ({ className = 'size-4' }: { className?: string }) => (
   <svg viewBox="0 0 24 24" aria-hidden="true" className={`${className} animate-spin`}>
     <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" strokeOpacity=".25" strokeWidth="2.5" />

@@ -1,20 +1,31 @@
 import { useId, useState } from 'react';
-import type { DiffHunk, FileChange, FileDiff, HistoryEntry, ProjectId, TreeFile } from '@draft-tide/contracts';
-import { ChevronDown, ChevronLeft, FileIcon } from '../components/icons.tsx';
+import {
+  previewKindOf,
+  type DiffHunk,
+  type FileChange,
+  type FileDiff,
+  type HistoryEntry,
+  type ProjectId,
+  type TreeFile,
+} from '@draft-tide/contracts';
+import { Check, ChevronDown, ChevronLeft, FileIcon } from '../components/icons.tsx';
+import { PreviewWithDialog } from '../components/preview.tsx';
 import { Badge, type BadgeTone } from '../components/ui/badge.tsx';
 import { Button } from '../components/ui/button.tsx';
 import { Card } from '../components/ui/card.tsx';
 import { cn } from '../lib/cn.ts';
 import { useDiff, useFileDiff, useHistory } from '../lib/engine-state.ts';
+import { usePreview } from '../lib/preview.ts';
 import { entryTime, entryTitle, formatBytes, formatWhen, shortId, versionLabel } from '../lib/format.ts';
 import type { Navigate } from '../lib/route.ts';
 import { ErrorNote } from './error-note.tsx';
 import { SourceBadge, refOf, summarize } from './project.tsx';
 
-// 版本比較 (M1 plan §4.1, §7.2): the files that differ between two versions,
-// with a read-only line view for text. Side-by-side previews arrive with the
-// Preview Host (M1-06). Every line is a React text node: content is never
-// interpreted as HTML.
+// 版本比較 (M1 plan §4.1, §7.2): the two versions' pictures side by side
+// (rendered by the isolated Preview Host, M1-06), then the files that differ,
+// with a read-only line view for text and both pictures of a changed PNG or
+// JPEG. Every line is a React text node: content is never interpreted as
+// HTML.
 
 const CHANGE: Record<FileChange['change'], { label: string; tone: BadgeTone }> = {
   added: { label: '新增', tone: 'ok' },
@@ -97,7 +108,7 @@ export function CompareScreen({
         </Button>
         <VersionPicker label="較新" value={to} entries={entries} onChange={(t) => set(from, t)} />
       </Card>
-      <p className="text-[12px] text-ink-3">兩版畫面的並排預覽會在後續版本提供；目前先比較檔案。</p>
+      {from !== to && <SideBySide projectId={projectId} from={from} to={to} entries={entries} />}
 
       {from === to ? (
         <Card className="px-4 py-6 text-center text-sm text-ink-3">請選擇兩個不同的版本。</Card>
@@ -140,10 +151,101 @@ export function CompareScreen({
             </p>
           )}
           <p className="text-[12px] text-ink-3">
-            文字檔可以展開查看逐行差異（唯讀）；圖片等其他檔案顯示大小與內容識別碼。
+            文字檔可以展開查看逐行差異（唯讀）；PNG 與 JPEG 圖片可以展開並排比較；其他檔案顯示大小與內容識別碼。
           </p>
         </section>
       )}
+    </div>
+  );
+}
+
+function labelFor(entries: HistoryEntry[], ref: string): string {
+  const e = entries.find((x) => refOf(x) === ref || x.commit === ref);
+  return e ? (versionLabel(e) ?? `「${entryTitle(e)}」`) : shortId(ref);
+}
+
+// Both versions' entry pages at the same fixed size. Equal pictures are said
+// to be equal (same pixels); everything else is for the eye.
+function SideBySide({
+  projectId,
+  from,
+  to,
+  entries,
+}: {
+  projectId: ProjectId;
+  from: string;
+  to: string;
+  entries: HistoryEntry[];
+}) {
+  const a = usePreview(projectId, from);
+  const b = usePreview(projectId, to);
+  const same = a.data && b.data && a.data.image.sha256 === b.data.image.sha256;
+  return (
+    <section aria-labelledby="screens-title" className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-baseline gap-3">
+        <h2 id="screens-title" className="text-[15px] font-semibold">
+          畫面
+        </h2>
+        <span className="text-[13px] text-ink-3">預覽頁面在 1280×800 視窗中的樣子（離線產生）</span>
+        {same && (
+          <span className="flex items-center gap-1 text-[13px] text-ok" role="status">
+            <Check className="size-3.5" />
+            兩個版本的畫面完全相同
+          </span>
+        )}
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        {[
+          { side: '較早', ref: from },
+          { side: '較新', ref: to },
+        ].map(({ side, ref }) => (
+          <div key={side} className="flex min-w-0 flex-col gap-1.5">
+            <p className="text-[12px] text-ink-3">
+              {side} · <span className="font-medium text-ink-2">{labelFor(entries, ref)}</span>
+            </p>
+            <PreviewWithDialog projectId={projectId} version={ref} label={labelFor(entries, ref)} />
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// A changed PNG or JPEG, as each version holds it.
+function ImagePair({
+  projectId,
+  from,
+  to,
+  path,
+  previousPath,
+  before,
+  after,
+}: {
+  projectId: ProjectId;
+  from: string;
+  to: string;
+  path: string;
+  previousPath: string;
+  before: boolean;
+  after: boolean;
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-4">
+      {[
+        { side: '之前', ref: from, file: previousPath, present: before },
+        { side: '之後', ref: to, file: path, present: after },
+      ].map(({ side, ref, file, present }) => (
+        <div key={side} className="flex min-w-0 flex-col gap-1.5">
+          <p className="text-[12px] text-ink-3">{side}</p>
+          {present ? (
+            <PreviewWithDialog projectId={projectId} version={ref} file={file} label={side} />
+          ) : (
+            <div className="grid aspect-[16/10] place-items-center rounded-md border border-dashed border-line text-[12px] text-ink-3">
+              {side === '之前' ? '這個版本還沒有這張圖片' : '這個版本刪除了這張圖片'}
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   );
 }
@@ -206,7 +308,18 @@ function ChangeRow({
         )}
       </button>
       {expandable && open && (
-        <div className="border-t border-line bg-canvas/50 px-3.5 py-3">
+        <div className="flex flex-col gap-3 border-t border-line bg-canvas/50 px-3.5 py-3">
+          {previewKindOf(change.path) === 'image' && (
+            <ImagePair
+              projectId={projectId}
+              from={from}
+              to={to}
+              path={change.path}
+              previousPath={change.previousPath ?? change.path}
+              before={change.before !== null}
+              after={change.after !== null}
+            />
+          )}
           <FileDiffView projectId={projectId} from={from} to={to} path={change.path} />
         </div>
       )}

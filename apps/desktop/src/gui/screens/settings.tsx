@@ -1,7 +1,8 @@
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState, type ReactNode } from 'react';
 import type { OperationStatus } from '@draft-tide/contracts';
 import type { ConnectionState } from '../../shared/bridge.ts';
-import { Agent, Alert } from '../components/icons.tsx';
+import { Agent, Alert, Check } from '../components/icons.tsx';
 import { isConnectRequest, useAnswerRequest, type ConnectRequest } from '../components/operation-banners.tsx';
 import { ConfirmDialog } from '../components/ui/alert-dialog.tsx';
 import { Badge } from '../components/ui/badge.tsx';
@@ -17,7 +18,9 @@ import {
   useProjects,
   useSetAgentAccess,
 } from '../lib/engine-state.ts';
-import { formatWhen, shortId } from '../lib/format.ts';
+import { engineCall } from '../lib/bridge.ts';
+import { formatBytes, formatWhen, shortId } from '../lib/format.ts';
+import { usePreviewStatus, previewStatusKey } from '../lib/preview.ts';
 import type { Navigate } from '../lib/route.ts';
 import { ErrorNote } from './error-note.tsx';
 
@@ -143,6 +146,73 @@ function EngineCard({ connection }: { connection: ConnectionState }) {
         ) : (
           <p className="text-[13px] text-ink-3">讀取中…</p>
         )}
+      </CardBody>
+    </Card>
+  );
+}
+
+// Previews (M1 plan §8): whether this Draft Tide can render them, how, and
+// the rebuildable cache, which can be cleared at any time.
+function PreviewCard() {
+  const status = usePreviewStatus();
+  const client = useQueryClient();
+  const clear = useMutation({
+    mutationFn: () => engineCall('preview.clearCache', {}),
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: previewStatusKey });
+      void client.invalidateQueries({ queryKey: ['snapshot.preview'] });
+    },
+  });
+  const s = status.data;
+  return (
+    <Card>
+      <CardHeader
+        title="畫面預覽"
+        description="版本的畫面由獨立、離線的預覽程式產生，只存在這台電腦的快取中，不會放進設計資料夾或歷史。"
+        action={s ? s.available ? <Badge tone="ok">可以使用</Badge> : <Badge tone="warn">無法使用</Badge> : undefined}
+      />
+      <CardBody>
+        {status.isError ? (
+          <ErrorNote error={status.error} />
+        ) : s ? (
+          <dl className="divide-y divide-line">
+            {!s.available && (
+              <Row label="原因">這個 Draft Tide 引擎沒有預覽程式（開發版本由 Draft Tide 視窗啟動引擎時才有）。</Row>
+            )}
+            {s.renderer && (
+              <Row label="瀏覽器核心">
+                <span className="font-mono text-[12px]">{s.renderer}</span>
+              </Row>
+            )}
+            <Row label="固定設定">
+              {s.settings.viewport.width}×{s.settings.viewport.height} · {s.settings.locale} · {s.settings.timezone} ·
+              網路關閉
+            </Row>
+            <Row label="快取">
+              <span className="flex flex-wrap items-center gap-3">
+                {s.cache.entries} 個預覽 · {formatBytes(s.cache.bytes)}（上限 {formatBytes(s.cache.budgetBytes)}
+                ，超過時移除最久沒用的）
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => clear.mutate()}
+                  disabled={clear.isPending || s.cache.entries === 0}
+                >
+                  {clear.isPending ? '清除中…' : '清除預覽快取'}
+                </Button>
+              </span>
+            </Row>
+          </dl>
+        ) : (
+          <p className="text-[13px] text-ink-3">讀取中…</p>
+        )}
+        {clear.data && (
+          <p className="mt-3 flex items-center gap-2 rounded-md bg-ok-soft px-3 py-2 text-[13px] text-ok" role="status">
+            <Check className="size-4" />
+            已清除 {clear.data.entries} 個預覽（{formatBytes(clear.data.bytes)}）。需要時會重新產生。
+          </p>
+        )}
+        {clear.isError && <ErrorNote className="mt-3" error={clear.error} />}
       </CardBody>
     </Card>
   );
@@ -275,12 +345,13 @@ export function SettingsScreen({ connection, navigate }: { connection: Connectio
     <div className="mx-auto flex max-w-[760px] flex-col gap-6 px-page pt-10 pb-24">
       <div>
         <h1 className="text-[22px] font-semibold tracking-tight">設定與診斷</h1>
-        <p className="mt-1 text-ink-2">agent 存取、待處理的請求、中斷的操作與引擎狀態。</p>
+        <p className="mt-1 text-ink-2">agent 存取、待處理的請求、中斷的操作、引擎與畫面預覽。</p>
       </div>
       <AgentAccessCard />
       <RequestsCard navigate={navigate} />
       <AttentionCard navigate={navigate} />
       <EngineCard connection={connection} />
+      <PreviewCard />
       <Card>
         <CardHeader
           title="容量與診斷匯出"

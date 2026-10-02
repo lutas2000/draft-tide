@@ -22,6 +22,7 @@ import {
   Save,
   Undo,
 } from '../components/icons.tsx';
+import { PreviewThumb, PreviewWithDialog } from '../components/preview.tsx';
 import { ProgressLine } from '../components/progress.tsx';
 import { Badge, type BadgeTone } from '../components/ui/badge.tsx';
 import { Button } from '../components/ui/button.tsx';
@@ -260,6 +261,7 @@ export function ProjectScreen({
                   {entries.map((e) => (
                     <HistoryRow
                       key={e.commit}
+                      projectId={projectId}
                       entry={e}
                       selected={current?.commit === e.commit}
                       onSelect={() => setSelected(e.commit)}
@@ -287,6 +289,7 @@ export function ProjectScreen({
       {current && (
         <VersionPanel
           key={current.commit}
+          projectId={projectId}
           entry={current}
           entries={entries}
           onCompare={(from, to) => navigate({ name: 'compare', projectId, from: refOf(from), to: refOf(to) })}
@@ -407,7 +410,17 @@ function RecoveredNote({ outcome }: { outcome: Recovered }) {
   );
 }
 
-function HistoryRow({ entry, selected, onSelect }: { entry: HistoryEntry; selected: boolean; onSelect: () => void }) {
+function HistoryRow({
+  projectId,
+  entry,
+  selected,
+  onSelect,
+}: {
+  projectId: ProjectId;
+  entry: HistoryEntry;
+  selected: boolean;
+  onSelect: () => void;
+}) {
   const label = versionLabel(entry);
   const when = entryTime(entry);
   return (
@@ -421,6 +434,7 @@ function HistoryRow({ entry, selected, onSelect }: { entry: HistoryEntry; select
           selected && 'bg-tide-50 hover:bg-tide-50',
         )}
       >
+        <PreviewThumb projectId={projectId} version={refOf(entry)} label={label ?? entryTitle(entry)} />
         <span
           className={cn(
             'flex h-7 w-11 shrink-0 items-center justify-center rounded-sm text-[12px] font-semibold',
@@ -755,11 +769,13 @@ function SaveDialog({
 }
 
 function VersionPanel({
+  projectId,
   entry,
   entries,
   onCompare,
   onRestore,
 }: {
+  projectId: ProjectId;
   entry: HistoryEntry;
   entries: HistoryEntry[];
   onCompare: (from: HistoryEntry, to: HistoryEntry) => void;
@@ -795,6 +811,10 @@ function VersionPanel({
           )}
         </div>
       </div>
+
+      <section aria-label="畫面預覽">
+        <PreviewWithDialog projectId={projectId} version={refOf(entry)} label={label ?? entryTitle(entry)} />
+      </section>
 
       {entry.source === 'draft-tide' && entry.snapshot?.kind === 'agent-requested' && (
         <p className="flex items-start gap-2 rounded-md bg-agent-soft px-3 py-2 text-[12px] text-ink-2">

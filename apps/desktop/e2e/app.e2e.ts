@@ -1,11 +1,25 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { createSocket } from 'node:dgram';
+import { createServer } from 'node:net';
+import { networkInterfaces } from 'node:os';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { _electron as electron, type ElectronApplication, type Page } from 'playwright-core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { makePng } from '../../companion/test/png.ts';
 import { buildDesktop } from '../scripts/build.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -441,6 +455,213 @@ describe('restore, recovery and agent requests (M1-05)', () => {
     await expect.poll(() => existsSync(join(designDir, '.git', 'index.lock'))).toBe(false);
     await page.getByRole('heading', { name: '需要恢復' }).waitFor({ state: 'detached' });
     expect(tracked()).toBe('');
+  });
+});
+
+describe('previews (M1-06)', () => {
+  interface Artifact {
+    artifactId: string;
+    image: { sha256: string; width: number; height: number };
+    incomplete: boolean;
+    missing: { count: number; entries: { path: string; reason: string }[] };
+    blocked: { count: number; entries: { kind: string; target: string }[] };
+  }
+  type Envelope<T> = { ok: boolean; data: T; error: { code: string; details: Record<string, unknown> } | null };
+  let projectId = '';
+
+  // Calls the Engine through the app's own bridge (the trusted GUI frame).
+  function invoke<T>(op: string, payload: unknown): Promise<Envelope<T>> {
+    return page.evaluate(
+      async ([o, p]) => {
+        const w = globalThis as unknown as {
+          draftTide: { invoke(op: string, payload: unknown): Promise<unknown> };
+        };
+        return w.draftTide.invoke(o, p);
+      },
+      [op, payload] as const,
+    ) as Promise<Envelope<T>>;
+  }
+
+  async function openProject(): Promise<void> {
+    await nav('專案').click();
+    await page.getByRole('button', { name: /Pricing page/ }).click();
+    await page.getByRole('heading', { name: '版本歷史' }).waitFor();
+  }
+
+  async function saveVersion(name: string): Promise<string> {
+    const saved = await invoke<{ snapshotId: string }>('snapshot.create', { projectId, name });
+    expect(saved.ok).toBe(true);
+    return saved.data.snapshotId;
+  }
+
+  function setEntry(entry: string): void {
+    const file = join(designDir, '.drafttide.json');
+    const config = JSON.parse(readFileSync(file, 'utf8')) as { entryFiles: string[] };
+    config.entryFiles = [entry];
+    writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
+  }
+
+  beforeAll(async () => {
+    await openProject();
+    const list = await invoke<{ projectId: string; name: string }[]>('project.list', {});
+    projectId = list.data.find((p) => p.name === 'Pricing page')?.projectId ?? '';
+  });
+
+  it("shows each version's picture in the history and in its details", async () => {
+    await expect
+      .poll(() => page.getByRole('img', { name: /的畫面縮圖$/ }).count(), { timeout: 30_000 })
+      .toBeGreaterThan(3);
+    await page.getByRole('listitem').filter({ hasText: '第一版' }).click();
+    const panel = page.getByLabel('版本詳細內容');
+    await panel.getByRole('img', { name: 'V1 的畫面預覽' }).waitFor({ timeout: 30_000 });
+    await page.screenshot({ path: join(shots, 'project-previews.png') });
+    await panel.getByRole('button', { name: '放大 V1 的畫面' }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByText('頁面需要的檔案都在版本裡', { exact: false }).waitFor();
+    await dialog.getByText('預覽的產生方式').click();
+    await dialog.getByText('Chromium', { exact: false }).waitFor();
+    await page.screenshot({ path: join(shots, 'preview-dialog.png') });
+    await dialog.getByRole('button', { name: '關閉' }).click();
+  });
+
+  it("compares two versions' pictures side by side, and says when they are the same", async () => {
+    await page.getByRole('listitem').filter({ hasText: 'Yearly plans' }).click();
+    await page.getByRole('button', { name: '與上一筆比較' }).click();
+    await page.getByRole('heading', { name: '比較版本' }).waitFor();
+    await page.getByRole('img', { name: 'V1 的畫面預覽' }).waitFor({ timeout: 30_000 });
+    await page.getByRole('img', { name: 'V2 的畫面預覽' }).waitFor({ timeout: 30_000 });
+    expect(await page.getByText('兩個版本的畫面完全相同').count()).toBe(0);
+    await page.screenshot({ path: join(shots, 'compare-previews.png') });
+    // V5 restored V1: the same files, so the same picture.
+    const newer = page.getByLabel('較新');
+    const v5 = await newer.locator('option', { hasText: /^V5 · / }).getAttribute('value');
+    await newer.selectOption(v5 ?? '');
+    await page.getByText('兩個版本的畫面完全相同').waitFor({ timeout: 30_000 });
+  });
+
+  it('shows a changed PNG as both versions hold it', async () => {
+    write('img/hero.png', makePng(1200, 600, 90));
+    await saveVersion('New hero');
+    await openProject();
+    await page.getByRole('listitem').filter({ hasText: 'New hero' }).click();
+    await page.getByRole('button', { name: '與上一筆比較' }).click();
+    await page.getByRole('heading', { name: '比較版本' }).waitFor();
+    // The first changed file opens by itself.
+    const row = page.getByRole('button', { name: /img\/hero\.png/ });
+    if ((await row.getAttribute('aria-expanded')) !== 'true') await row.click();
+    // Before: the fixture's few bytes were never a readable PNG.
+    await page.getByText('這不是 Draft Tide 能讀取的 PNG 或 JPEG 圖片。').waitFor({ timeout: 30_000 });
+    const after = page.getByRole('img', { name: '之後 的畫面預覽' });
+    await after.waitFor({ timeout: 30_000 });
+    await after.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(shots, 'compare-image.png') });
+  });
+
+  it("keeps a design's page away from the network, other files and the app", async () => {
+    // Anything reaching these counts: TCP (HTTP, WebSocket) and UDP (WebRTC).
+    let tcp = 0;
+    let udp = 0;
+    const server = createServer((socket) => {
+      tcp++;
+      socket.destroy();
+    });
+    await new Promise<void>((r) => server.listen(0, '0.0.0.0', r));
+    const port = (server.address() as { port: number }).port;
+    const dgram = createSocket('udp4');
+    dgram.on('message', () => udp++);
+    await new Promise<void>((r) => dgram.bind(0, '0.0.0.0', r));
+    const udpPort = dgram.address().port;
+    const lan =
+      Object.values(networkInterfaces())
+        .flat()
+        .find((i) => i && i.family === 'IPv4' && !i.internal)?.address ?? '127.0.0.1';
+
+    write(
+      'probe.html',
+      `<!doctype html><meta charset="utf-8"><title>probe</title>
+<link rel="dns-prefetch" href="//probe-dns.example"><link rel="prefetch" href="http://127.0.0.1:${port}/prefetch">
+<h1>Isolation probe</h1><img src="http://${lan}:${port}/img"><iframe src="https://example.com/frame"></iframe>
+<script>
+const report = (k, v) => fetch('/__probe__/' + encodeURIComponent(k + '=' + v)).catch(() => {});
+report('require', typeof require); report('process', typeof process); report('bridge', typeof window.draftTide);
+const tries = { external: 'https://example.com/', loopback: 'http://127.0.0.1:${port}/f', lan: 'http://${lan}:${port}/f',
+  file: 'file:///etc/hosts', gui: 'app://gui/index.html', traversal: 'dt-preview://job/../../../../etc/hosts',
+  encoded: 'dt-preview://job/%2e%2e%2f%2e%2e%2fetc%2fhosts', own: 'dt-preview://job/css/site.css' };
+for (const [k, u] of Object.entries(tries)) fetch(u).then((r) => r.ok ? r.text().then((t) => report(k, 'read')) : report(k, 'status' + r.status), () => report(k, 'blocked'));
+try { const ws = new WebSocket('ws://127.0.0.1:${port}/ws'); ws.onopen = () => report('ws', 'open'); ws.onerror = () => report('ws', 'blocked'); } catch { report('ws', 'threw'); }
+report('popup', window.open('https://example.com/popup') ? 'opened' : 'null');
+navigator.geolocation.getCurrentPosition(() => report('geo', 'granted'), () => report('geo', 'denied'));
+const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:${lan}:${udpPort}' }, { urls: 'stun:127.0.0.1:${udpPort}' }] });
+pc.createDataChannel('x'); pc.onicecandidate = (e) => { if (e.candidate && e.candidate.type !== 'host') report('ice', e.candidate.type); };
+pc.createOffer().then((o) => pc.setLocalDescription(o));
+setTimeout(() => { location.href = 'https://example.com/away'; }, 50);
+</script>`,
+    );
+    setEntry('probe.html');
+    const probe = await saveVersion('Probe');
+    const art = await invoke<Artifact>('snapshot.preview', { projectId, version: probe });
+    expect(art.ok).toBe(true);
+    await new Promise((r) => setTimeout(r, 1_000));
+    server.close();
+    dgram.close();
+
+    const results = Object.fromEntries(
+      art.data.missing.entries
+        .filter((m) => m.path.startsWith('__probe__/'))
+        .map((m) => m.path.slice('__probe__/'.length).split('=') as [string, string]),
+    );
+    expect(results).toMatchObject({
+      require: 'undefined',
+      process: 'undefined',
+      bridge: 'undefined',
+      external: 'blocked',
+      loopback: 'blocked',
+      lan: 'blocked',
+      file: 'blocked',
+      gui: 'blocked',
+      // `..` is resolved by the URL; encoded `..` is refused by the Engine.
+      traversal: 'status404',
+      encoded: 'status404',
+      own: 'read',
+      ws: 'blocked',
+      popup: 'null',
+      geo: 'denied',
+    });
+    expect(results['ice']).toBeUndefined();
+    expect({ tcp, udp }).toEqual({ tcp: 0, udp: 0 });
+    const kinds = new Set(art.data.blocked.entries.map((b) => b.kind));
+    expect([...kinds].sort()).toEqual(['navigation', 'network', 'permission', 'popup']);
+    expect(art.data.incomplete).toBe(true);
+  });
+
+  it('says why a version has no picture; the version itself is fine', async () => {
+    setEntry('css/site.css');
+    await saveVersion('Odd entry');
+    await openProject();
+    await page.getByRole('listitem').filter({ hasText: 'Odd entry' }).click();
+    const panel = page.getByLabel('版本詳細內容');
+    await panel.getByText('預覽頁面不是 HTML 網頁，也不是 PNG / JPEG 圖片。').waitFor({ timeout: 30_000 });
+    await panel.getByRole('button', { name: '回復到此版' }).waitFor();
+    await page.getByText('沒有新的變更').waitFor();
+    await page.screenshot({ path: join(shots, 'preview-unsupported.png') });
+    setEntry('index.html');
+    await saveVersion('Entry back');
+  });
+
+  it('shows the preview cache in settings and clears it', async () => {
+    await nav('設定與診斷').click();
+    const card = page.getByRole('region', { name: '畫面預覽' }).or(page.locator('section', { hasText: '畫面預覽' }));
+    await card.getByText('可以使用').first().waitFor();
+    await page.screenshot({ path: join(shots, 'settings-previews.png') });
+    const cache = join(dataDir, 'projects', projectId, 'cache', 'previews');
+    const before = readdirSync(cache);
+    expect(before.length).toBeGreaterThan(0);
+    const clicked = Date.now();
+    await page.getByRole('button', { name: '清除預覽快取' }).click();
+    await page.getByText(/^已清除 \d+ 個預覽/).waitFor();
+    // None of the old files stay (one the app asks for again is made anew).
+    const kept = readdirSync(cache).filter((f) => before.includes(f) && statSync(join(cache, f)).mtimeMs < clicked);
+    expect(kept).toEqual([]);
   });
 });
 

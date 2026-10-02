@@ -8,6 +8,7 @@ import {
   OperationState,
   Origin,
   PlanRecord,
+  PreviewRecord,
   TERMINAL_OPERATION_STATES,
   type AgentAccess,
   type IsoTimestamp,
@@ -22,7 +23,9 @@ import type {
   OperationFile,
   OperationQuery,
   OperationRecord,
+  PreviewCacheEntry,
   StoredPlan,
+  StoredPreview,
 } from '@draft-tide/core';
 import { MIGRATIONS, type Migration } from './migrations.ts';
 
@@ -179,6 +182,15 @@ interface FileRow {
   after_oid: string | null;
   after_mode: string | null;
   done: number;
+}
+
+interface PreviewRow {
+  project_id: string;
+  cache_key: string;
+  created_at: string;
+  used_at: string;
+  bytes: number;
+  data: string;
 }
 
 interface PlanRow {
@@ -481,6 +493,62 @@ class SqliteLocalStore implements LocalStoreHandle {
         .run(before, ...ended);
       this.#db.prepare('DELETE FROM plans WHERE expires_at < ?').run(before);
     })();
+  }
+
+  // ---- The preview cache's index (a cache: unreadable rows are dropped)
+
+  getPreview(projectId: ProjectId, key: string): StoredPreview | null {
+    const row = this.#db
+      .prepare('SELECT * FROM preview_cache WHERE project_id = ? AND cache_key = ?')
+      .get(projectId, key) as PreviewRow | undefined;
+    if (!row) return null;
+    let record: PreviewRecord;
+    try {
+      record = parseJson(row.data, PreviewRecord, 'preview');
+    } catch {
+      this.deletePreview(projectId, key);
+      return null;
+    }
+    return {
+      projectId: row.project_id as ProjectId,
+      key: row.cache_key,
+      createdAt: row.created_at,
+      usedAt: row.used_at,
+      bytes: row.bytes,
+      record,
+    };
+  }
+
+  putPreview(entry: StoredPreview): void {
+    this.#db
+      .prepare(
+        `INSERT INTO preview_cache (project_id, cache_key, created_at, used_at, bytes, data) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (project_id, cache_key) DO UPDATE SET created_at = excluded.created_at,
+           used_at = excluded.used_at, bytes = excluded.bytes, data = excluded.data`,
+      )
+      .run(entry.projectId, entry.key, entry.createdAt, entry.usedAt, entry.bytes, JSON.stringify(entry.record));
+  }
+
+  touchPreview(projectId: ProjectId, key: string, at: IsoTimestamp): void {
+    this.#db
+      .prepare('UPDATE preview_cache SET used_at = ? WHERE project_id = ? AND cache_key = ?')
+      .run(at, projectId, key);
+  }
+
+  deletePreview(projectId: ProjectId, key: string): void {
+    this.#db.prepare('DELETE FROM preview_cache WHERE project_id = ? AND cache_key = ?').run(projectId, key);
+  }
+
+  listPreviews(): PreviewCacheEntry[] {
+    const rows = this.#db
+      .prepare('SELECT project_id, cache_key, used_at, bytes FROM preview_cache ORDER BY used_at, rowid')
+      .all() as Pick<PreviewRow, 'project_id' | 'cache_key' | 'used_at' | 'bytes'>[];
+    return rows.map((r) => ({
+      projectId: r.project_id as ProjectId,
+      key: r.cache_key,
+      usedAt: r.used_at,
+      bytes: r.bytes,
+    }));
   }
 
   close(): void {

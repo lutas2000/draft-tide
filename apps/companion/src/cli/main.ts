@@ -1,6 +1,9 @@
 // `draft-tide`: a thin Engine client (M1 plan §11.1). With --json, stdout gets
 // exactly one envelope line and nothing else; diagnostics go to stderr. It
 // never opens SQLite or runs Git.
+import { createHash } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { Command, CommanderError, InvalidArgumentError } from 'commander';
 import {
   DtError,
@@ -16,6 +19,8 @@ import {
   type OperationCancelResult,
   type OperationName,
   type OperationStatus,
+  type PreviewArtifact,
+  type PreviewChunk,
   type ProjectStatus,
   type RecoveryPlan,
   type RecoveryReport,
@@ -51,6 +56,8 @@ const HINTS: Partial<Record<ErrorCode, string>> = {
     'Only the user can do this, in the Draft Tide app. Follow the request with `draft-tide operation status <id>`.',
   APPROVAL_DENIED: 'The user declined the request in the Draft Tide app.',
   CANCELLED: 'The operation was cancelled before it changed anything.',
+  PREVIEW_UNSUPPORTED: 'This version has nothing Draft Tide can preview (see details.reason). The version is fine.',
+  PREVIEW_FAILED: 'The preview could not be made (see details.reason). The version is fine.',
 };
 
 // Text from Git or file names, safe to print on a terminal: no escape
@@ -263,6 +270,74 @@ function renderCancel(r: OperationCancelResult): string {
   return `${r.outcome}\n${renderOperation(r.operation)}`;
 }
 
+type PreviewOutput = PreviewArtifact & { out?: { path: string; image: 'full' | 'thumbnail'; bytes: number } };
+
+function renderPreview(p: PreviewOutput): string {
+  const version = versionText(p.version);
+  const what = p.subject.kind === 'page' ? `page ${safe(p.subject.path)}` : `image ${safe(p.subject.path)}`;
+  const lines = [
+    `Preview of ${version}: ${what}`,
+    `  ${p.image.width}×${p.image.height} PNG (${p.image.bytes} bytes), thumbnail ${p.thumbnail.width}×${p.thumbnail.height}; rendered ${p.renderedAt}${p.cached ? ' (cached)' : ''}`,
+  ];
+  if (p.missing.count > 0) {
+    lines.push(
+      `  Missing (${p.missing.count}): ${p.missing.entries.map((m) => `${safe(m.path)} [${m.reason}]`).join(', ')}`,
+    );
+  }
+  if (p.blocked.count > 0) {
+    lines.push(
+      `  Blocked (${p.blocked.count}): ${p.blocked.entries.map((b) => `${b.kind} ${safe(b.target)}`).join(', ')}`,
+    );
+  }
+  const e = p.environment;
+  lines.push(
+    `  Renderer: ${safe(e.renderer)} on ${safe(e.platform)} ${safe(e.osRelease)}; ${p.settings.viewport.width}×${p.settings.viewport.height}, ${safe(p.settings.locale)}, ${safe(p.settings.timezone)}`,
+    `  Artifact: ${p.artifactId} (readable until ${p.expiresAt})`,
+  );
+  if (p.out) lines.push(`  Written: ${safe(p.out.path)} (${p.out.image}, ${p.out.bytes} bytes)`);
+  return `${lines.join('\n')}\n`;
+}
+
+// Reads the artifact's PNG in chunks and checks it against the artifact's
+// hash before writing it (never over an existing file).
+async function savePreview(
+  conn: EngineConnection,
+  art: PreviewArtifact,
+  image: 'full' | 'thumbnail',
+  out: string,
+): Promise<PreviewOutput> {
+  const parts: Buffer[] = [];
+  let offset = 0;
+  for (;;) {
+    const chunk = (await conn.callRaw('preview.read', {
+      projectId: art.projectId,
+      artifactId: art.artifactId,
+      image,
+      offset,
+    })) as PreviewChunk;
+    const bytes = Buffer.from(chunk.data, 'base64');
+    parts.push(bytes);
+    offset += bytes.length;
+    if (chunk.done || bytes.length === 0) break;
+  }
+  const png = Buffer.concat(parts);
+  const want = image === 'full' ? art.image : art.thumbnail;
+  if (createHash('sha256').update(png).digest('hex') !== want.sha256) {
+    throw new DtError('PREVIEW_FAILED', 'the preview changed while it was read; ask for it again', {
+      reason: 'invalid-output',
+    });
+  }
+  const path = resolve(out);
+  try {
+    writeFileSync(path, png, { flag: 'wx' });
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'EEXIST') usage(`${out} already exists; choose another --out`);
+    throw new DtError('INVALID_ARGUMENT', `cannot write ${out} (${code ?? 'error'})`, { reason: 'out-not-writable' });
+  }
+  return { ...art, out: { path, image, bytes: png.length } };
+}
+
 async function withEngine<T>(
   fn: (conn: EngineConnection) => Promise<T>,
   render: (data: never) => string,
@@ -376,6 +451,28 @@ program
     options.file !== undefined
       ? run('snapshot.diffFile', () => ({ projectId: requireProject(), from, to, path: options.file }), renderFileDiff)
       : run('snapshot.diff', () => ({ projectId: requireProject(), from, to }), renderDiff),
+  );
+
+program
+  .command('preview')
+  .description(
+    "A picture of a version: its entry page (or a PNG/JPEG with --file), rendered offline by Draft Tide's isolated Preview Host (needs --project)",
+  )
+  .argument('<version>', 'a snapshot id or commit id from `history`')
+  .option('--file <path>', 'a PNG or JPEG of the version instead of its entry page')
+  .option('--out <png>', 'write the PNG to this file (never overwrites one)')
+  .option('--thumbnail', 'with --out: write the 400×250 thumbnail instead')
+  .action((version: string, options: { file?: string; out?: string; thumbnail?: boolean }) =>
+    withEngine(async (conn) => {
+      if (options.thumbnail && options.out === undefined) usage('--thumbnail needs --out');
+      const art = (await conn.callRaw('snapshot.preview', {
+        projectId: requireProject(),
+        version,
+        ...(options.file !== undefined ? { file: options.file } : {}),
+      })) as PreviewArtifact;
+      if (options.out === undefined) return art;
+      return savePreview(conn, art, options.thumbnail ? 'thumbnail' : 'full', options.out);
+    }, renderPreview),
   );
 
 const init = program.command('init').description('Connecting a design folder (done by the user in the app)');
