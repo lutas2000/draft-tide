@@ -146,7 +146,7 @@ export const FolderState = z.enum(FOLDER_STATES);
 export type FolderState = z.infer<typeof FolderState>;
 
 // What a running change to a project is doing.
-export const ACTIVITIES = ['saving', 'restoring', 'recovering'] as const;
+export const ACTIVITIES = ['saving', 'restoring', 'recovering', 'pulling', 'opening'] as const;
 export type Activity = (typeof ACTIVITIES)[number];
 
 export const StatusChange = z.strictObject({

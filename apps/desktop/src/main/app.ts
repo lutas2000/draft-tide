@@ -5,7 +5,18 @@
 import { existsSync } from 'node:fs';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { BrowserWindow, app, dialog, ipcMain, net, protocol, session, type IpcMainInvokeEvent } from 'electron';
+import {
+  BrowserWindow,
+  app,
+  clipboard,
+  dialog,
+  ipcMain,
+  net,
+  protocol,
+  session,
+  shell,
+  type IpcMainInvokeEvent,
+} from 'electron';
 import { DtError, OPERATIONS, errorEnvelope, isOperationName, isSingleLine } from '@draft-tide/contracts';
 import { IPC, type ConnectionState } from '../shared/bridge.ts';
 import { BUILD } from './build-info.ts';
@@ -55,15 +66,22 @@ export function runApp(): void {
   // connecting a folder needs one of these: a path typed into the renderer (or
   // injected into it) is never authorization (M1 plan §6.2).
   const chosenFolders = new Set<string>();
-  const NEEDS_CHOSEN_FOLDER: ReadonlySet<string> = new Set(['project.review', 'project.bind']);
+  // The operation, and the field naming the folder: a folder to connect, or
+  // the empty folder a project from GitHub is opened into.
+  const NEEDS_CHOSEN_FOLDER: ReadonlyMap<string, string> = new Map([
+    ['project.review', 'root'],
+    ['project.bind', 'root'],
+    ['remote.openPlan', 'destination'],
+  ]);
 
   ipcMain.handle(IPC.invoke, async (event, op: unknown, payload: unknown) => {
     if (!trusted(event)) return errorEnvelope(new DtError('UNAUTHENTICATED', 'untrusted sender'));
     if (typeof op !== 'string' || !isOperationName(op) || !OPERATIONS[op].desktop) {
       return errorEnvelope(new DtError('UNKNOWN_OPERATION', `not an app operation: ${String(op).slice(0, 64)}`));
     }
-    if (NEEDS_CHOSEN_FOLDER.has(op)) {
-      const root = (payload as { root?: unknown } | null)?.root;
+    const field = NEEDS_CHOSEN_FOLDER.get(op);
+    if (field !== undefined) {
+      const root = (payload as Record<string, unknown> | null)?.[field];
       if (typeof root !== 'string' || !chosenFolders.has(root)) {
         return errorEnvelope(
           new DtError('INVALID_ARGUMENT', 'choose the folder in Draft Tide first', { reason: 'folder-not-chosen' }),
@@ -93,6 +111,25 @@ export function runApp(): void {
     if (!folder) return null;
     chosenFolders.add(folder);
     return folder;
+  });
+  // GitHub's pages only: the device sign-in page, creating a repository,
+  // installing the app, a repository, the authorized apps. The URL comes from
+  // the renderer, so it is checked here, not trusted.
+  ipcMain.handle(IPC.openExternal, async (event, url: unknown) => {
+    if (!trusted(event) || typeof url !== 'string' || url.length > 2048 || !URL.canParse(url)) return false;
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:' || parsed.hostname !== 'github.com' || parsed.username || parsed.password) {
+      return false;
+    }
+    await shell.openExternal(parsed.href);
+    return true;
+  });
+  // The sign-in code: short, one line. (The page's own clipboard access is
+  // denied with every other permission.)
+  ipcMain.handle(IPC.copyText, (event, text: unknown) => {
+    if (!trusted(event) || typeof text !== 'string' || text.length > 64 || !isSingleLine(text)) return false;
+    void clipboard.writeText(text);
+    return true;
   });
   ipcMain.handle(IPC.connectionState, (event) => (trusted(event) ? engine.state : null));
   ipcMain.handle(IPC.reconnect, async (event) => {

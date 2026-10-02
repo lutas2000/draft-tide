@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PREVIEW_HOST_ENV } from '@draft-tide/contracts';
+import { PREVIEW_HOST_ENV, TEST_GITHUB_ENV } from '@draft-tide/contracts';
 import type { EngineLaunch } from '@draft-tide/engine-client';
 import { BUILD } from './build-info.ts';
 
@@ -22,5 +22,8 @@ export function engineLaunch(): EngineLaunch {
   // So may their Engine's Preview Host (the desktop app passes its own).
   const previewHost = process.env[PREVIEW_HOST_ENV];
   if (previewHost && BUILD.mode === 'development') env[PREVIEW_HOST_ENV] = previewHost;
+  // And the test GitHub (tests, the desktop E2E).
+  const testGitHub = process.env[TEST_GITHUB_ENV];
+  if (testGitHub && BUILD.mode === 'development') env[TEST_GITHUB_ENV] = testGitHub;
   return { nodePath: process.execPath, engineEntry, env };
 }

@@ -52,6 +52,7 @@ import type { Navigate, Route } from '../lib/route.ts';
 import { ErrorNote } from './error-note.tsx';
 import { RecoveryCard, type Recovered } from './recovery-card.tsx';
 import { RestoreDialog } from './restore-dialog.tsx';
+import { SyncCard } from './sync.tsx';
 
 // A connected project (M1 plan §4.1 版本歷史): what changed since the newest
 // version, saving, restoring a version, recovering an operation that stopped
@@ -62,6 +63,10 @@ const ACTIVITY_OF: Record<ProgressEvent['operation'], Activity> = {
   'snapshot.create': 'saving',
   'restore.apply': 'restoring',
   'recovery.apply': 'recovering',
+  'remote.connectApply': 'saving',
+  'sync.push': 'saving',
+  'sync.pullApply': 'pulling',
+  'remote.openApply': 'opening',
 };
 
 const KIND_TONE: Record<string, BadgeTone> = {
@@ -105,10 +110,12 @@ export function ProjectScreen({
   projectId,
   navigate,
   notice,
+  connectRequestId,
 }: {
   projectId: ProjectId;
   navigate: Navigate;
   notice?: Extract<Route, { name: 'project' }>['notice'];
+  connectRequestId?: Extract<Route, { name: 'project' }>['connectRequestId'];
 }) {
   const status = useProjectStatus(projectId);
   const history = useHistory(projectId);
@@ -221,6 +228,8 @@ export function ProjectScreen({
               rechecking={status.isFetching}
             />
           )}
+
+          <SyncCard projectId={projectId} navigate={navigate} connectRequestId={connectRequestId} />
 
           <section aria-labelledby="history-title" className="flex flex-col gap-3">
             <div className="flex items-baseline justify-between">
@@ -536,10 +545,13 @@ function StatusCard({
   const [open, setOpen] = useState(false);
   const [result, setResult] = useState<{ saved: SavedSnapshot } | { error: unknown } | null>(null);
   const progress = useOperationProgress(status.project.projectId);
-  // The Engine's events are newer than the last status read.
-  const active = progress
-    ? { activity: ACTIVITY_OF[progress.operation], origin: progress.origin }
-    : status.activeOperation;
+  // The Engine's events are newer than the last status read. A push writes
+  // no working file: it never keeps a save waiting.
+  const pushing = progress?.operation === 'sync.push' || progress?.operation === 'remote.connectApply';
+  const active =
+    progress && !pushing
+      ? { activity: ACTIVITY_OF[progress.operation], origin: progress.origin }
+      : status.activeOperation;
   const busy = active !== null;
 
   if (status.folder !== 'available') {

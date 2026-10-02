@@ -140,17 +140,58 @@ export function lineEndingsOf(lines: readonly string[]): LineEndings {
   return crlf > 0 ? 'crlf' : 'lf';
 }
 
+interface Flat {
+  op: ' ' | '+' | '-';
+  text: string;
+}
+
+// The line-by-line edit, or undefined when it is over the budget.
+//
 // Synchronous on purpose: jsdiff's callback mode advances one step of edit
 // distance per timer tick, so rewriting a 600-line file took 0.7 s on macOS
 // and over 3 s on Windows CI, against 1 ms here. The time budget bounds how
 // long the Engine is busy with one diff instead.
-function diffLineArrays(a: string[], b: string[]): { value: string[]; added: boolean; removed: boolean }[] | undefined {
-  return diffArrays(a, b, { timeout: TEXT_DIFF_BUDGET.timeoutMs, maxEditLength: TEXT_DIFF_BUDGET.maxEditLength });
-}
-
-interface Flat {
-  op: ' ' | '+' | '-';
-  text: string;
+//
+// A line only one side has can never be kept, so (as GNU diff does) the
+// search runs on the lines both sides have, and the others are slotted back
+// in, removals before additions, between the lines it keeps. The edit is just
+// as short, and a rewrite whose lines all differ, the search's worst case
+// (1,000 lines took 80 ms here and over 1 s on a busy CI runner), costs
+// nothing.
+function diffLines(a: readonly string[], b: readonly string[]): Flat[] | undefined {
+  const inA = new Set(a);
+  const inB = new Set(b);
+  const keptA = a.flatMap((line, i) => (inB.has(line) ? [i] : []));
+  const keptB = b.flatMap((line, i) => (inA.has(line) ? [i] : []));
+  const changes = diffArrays(
+    keptA.map((i) => a[i] as string),
+    keptB.map((i) => b[i] as string),
+    { timeout: TEXT_DIFF_BUDGET.timeoutMs, maxEditLength: TEXT_DIFF_BUDGET.maxEditLength },
+  );
+  if (!changes) return undefined;
+  const flat: Flat[] = [];
+  let pa = 0;
+  let pb = 0;
+  const changeUpTo = (endA: number, endB: number) => {
+    while (pa < endA) flat.push({ op: '-', text: a[pa++] as string });
+    while (pb < endB) flat.push({ op: '+', text: b[pb++] as string });
+  };
+  let ka = 0;
+  let kb = 0;
+  for (const c of changes) {
+    if (c.removed) ka += c.value.length;
+    else if (c.added) kb += c.value.length;
+    else {
+      for (const text of c.value) {
+        changeUpTo(keptA[ka++] as number, keptB[kb++] as number);
+        flat.push({ op: ' ', text });
+        pa++;
+        pb++;
+      }
+    }
+  }
+  changeUpTo(a.length, b.length);
+  return flat;
 }
 
 // Unified-diff hunks with `context` lines around each change; changes closer
@@ -255,17 +296,10 @@ export function diffFileContent(path: string, before: DiffSide | null, after: Di
 
   const oldLines = splitLines(oldText);
   const newLines = splitLines(newText);
-  const changes = diffLineArrays(oldLines, newLines);
-  if (!changes) return summary('too-complex');
-  const flat: Flat[] = [];
-  let added = 0;
-  let removed = 0;
-  for (const c of changes) {
-    const op = c.added ? '+' : c.removed ? '-' : ' ';
-    if (op === '+') added += c.value.length;
-    if (op === '-') removed += c.value.length;
-    for (const text of c.value) flat.push({ op, text });
-  }
+  const flat = diffLines(oldLines, newLines);
+  if (!flat) return summary('too-complex');
+  const added = flat.filter((l) => l.op === '+').length;
+  const removed = flat.filter((l) => l.op === '-').length;
   const hunks = buildHunks(flat, TEXT_DIFF_BUDGET.context);
   const { taken, truncated } = fitHunks(hunks, TEXT_DIFF_BUDGET.maxOutputBytes);
   const endsWithoutBreak = (lines: string[]) => lines.length > 0 && !(lines.at(-1) as string).endsWith('\n');

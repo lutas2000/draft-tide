@@ -1,5 +1,13 @@
 import { TERMINAL_OPERATION_STATES, type AgentAccess, type ProjectSummary } from '@draft-tide/contracts';
-import type { LocalStore, OperationFile, OperationRecord, StoredPlan, StoredPreview } from '../src/index.ts';
+import type {
+  LocalStore,
+  OperationFile,
+  OperationRecord,
+  QueuedPush,
+  StoredPlan,
+  StoredPreview,
+  StoredRemote,
+} from '../src/index.ts';
 
 // An in-memory stand-in for the SQLite store, with the same compare-and-set
 // and once-only semantics. The real store's own tests are in local-store; the
@@ -15,6 +23,8 @@ export function memoryStore(projects: unknown[] = []): LocalStore & {
   const files = new Map<string, OperationFile[]>();
   const plans = new Map<string, StoredPlan>();
   const previews = new Map<string, StoredPreview>();
+  const remotes = new Map<string, StoredRemote>();
+  const queue = new Map<string, QueuedPush>();
   const clone = <T>(v: T): T => structuredClone(v);
   return {
     storageSchemaVersion: 2,
@@ -37,6 +47,46 @@ export function memoryStore(projects: unknown[] = []): LocalStore & {
     findProjectByRoot: (root) => list.find((p) => p.root === root) ?? null,
     insertProject: (p) => void list.push(p),
     updateProject: () => undefined,
+    deleteProject(id) {
+      const i = list.findIndex((p) => p.projectId === id);
+      if (i >= 0) list.splice(i, 1);
+      remotes.delete(id);
+      queue.delete(id);
+    },
+    storeId: () => '00000000-0000-4000-8000-000000000000',
+    getRemote: (id) => clone(remotes.get(id) ?? null),
+    listRemotes: () => clone([...remotes.values()]),
+    putRemote: (projectId, remote) =>
+      void remotes.set(projectId, {
+        projectId,
+        remote: clone(remote),
+        remoteTip: null,
+        lastCheckAt: null,
+        lastPushAt: null,
+        lastError: null,
+      }),
+    deleteRemote(id) {
+      remotes.delete(id);
+      queue.delete(id);
+    },
+    updateRemoteState(id, change) {
+      const r = remotes.get(id);
+      if (r) Object.assign(r, clone(change));
+    },
+    queuePush(projectId, at) {
+      const q = queue.get(projectId);
+      queue.set(
+        projectId,
+        q ? { ...q, nextAttemptAt: at } : { projectId, requestedAt: at, attempts: 0, nextAttemptAt: at },
+      );
+    },
+    getQueuedPush: (id) => clone(queue.get(id) ?? null),
+    listQueuedPushes: () => clone([...queue.values()]),
+    deferPush(id, attempts, nextAttemptAt) {
+      const q = queue.get(id);
+      if (q) queue.set(id, { ...q, attempts, nextAttemptAt });
+    },
+    dequeuePush: (id) => void queue.delete(id),
 
     insertOperation(op) {
       if (operations.has(op.operationId)) throw new Error('duplicate operation');

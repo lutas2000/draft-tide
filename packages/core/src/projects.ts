@@ -69,9 +69,10 @@ export interface ProjectService {
   diffFile(projectId: ProjectId, from: string, to: string, path: string): Promise<FileDiff>;
 }
 
-// Connecting folders is serialized; saves of one project are serialized with
-// each other and with a relink of that project.
-const BINDINGS_GUARD = 'bindings';
+// Connecting folders (and opening projects from GitHub) is serialized; saves
+// of one project are serialized with each other and with a relink of that
+// project.
+export const BINDINGS_GUARD = 'bindings';
 const MAX_CHANGES_BYTES = 640 * 1024;
 const MAX_DIFF_CHANGES = 5000;
 
@@ -391,7 +392,7 @@ export function createProjectService(ctx: ProjectContext, recovery: RecoveryServ
         operationId,
         origin,
         name,
-        identity: ctx.identity,
+        identity: await ctx.commitIdentity(),
         clock,
         signal: run.signal,
         onProgress,

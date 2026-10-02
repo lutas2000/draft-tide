@@ -22,6 +22,7 @@ DRAFT_TIDE_GIT_ROOT=system node src/verify.ts     # run on Apple's Git instead o
 | `src/sync.ts` | fetch / push / classify / pull / open-from-remote through an ephemeral git dir + askpass |
 | `src/testserver.ts` | Smart-HTTP Git behind Basic auth (stand-in for GitHub) and a request-recording canary |
 | `src/tests-*.ts`, `src/verify.ts`, `src/harness.ts` | The suite (sections A–I) |
-| `src/github-check.ts` | For you to run against a throwaway GitHub repo with your own token. **Not** part of `verify`, not run by the author |
+| `src/github-check.ts` | For you to run against a throwaway GitHub repo (with a default branch) with your own token. **Not** part of `verify`. Passed on 2026-10-02 (report Finding 8) |
+| `src/github-app-check.ts` | GitHub App device-flow sign-in, installation scope, visibility, push and refresh, with a person entering the code. **Not** part of `verify`. Passed on 2026-10-02 (report Finding 9) |
 
 `SPIKE_WORK=<dir>` picks where fixtures go (default: the OS temp dir), `SPIKE_KEEP_WORK=1` keeps them. `results/` is git-ignored.

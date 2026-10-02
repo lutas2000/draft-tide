@@ -1,4 +1,4 @@
-import { RECOVERY_STAGE_LABEL, RESTORE_STAGE_LABEL, SAVE_STAGE_LABEL } from '../lib/copy.ts';
+import { RECOVERY_STAGE_LABEL, RESTORE_STAGE_LABEL, SAVE_STAGE_LABEL, SYNC_STAGE_LABEL } from '../lib/copy.ts';
 import type { ProgressEvent } from '../lib/engine-state.ts';
 import { Spinner } from './icons.tsx';
 
@@ -6,6 +6,10 @@ const STAGE_LABELS: Record<ProgressEvent['operation'], Record<string, string>> =
   'snapshot.create': SAVE_STAGE_LABEL,
   'restore.apply': RESTORE_STAGE_LABEL,
   'recovery.apply': RECOVERY_STAGE_LABEL,
+  'remote.connectApply': SYNC_STAGE_LABEL,
+  'sync.push': SYNC_STAGE_LABEL,
+  'sync.pullApply': SYNC_STAGE_LABEL,
+  'remote.openApply': SYNC_STAGE_LABEL,
 };
 
 // What the Engine reports while it saves, restores or recovers: the stage and

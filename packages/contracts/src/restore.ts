@@ -164,15 +164,16 @@ export type RecoveryReason = z.infer<typeof RecoveryReason>;
 export const RecoveryItem = z.strictObject({
   operationId: OperationId,
   // lock: only Draft Tide's lock is left, with nothing recorded about it.
-  kind: z.enum(['save', 'restore', 'lock']),
+  kind: z.enum(['save', 'restore', 'pull', 'open', 'lock']),
   origin: Origin.nullable(),
   state: OperationState.nullable(),
   reason: RecoveryReason,
   startedAt: IsoTimestamp.nullable(),
   target: CommitRef.nullable(),
   protection: CommitRef.nullable(),
-  // For a restore that wrote files: where each file is now. done: as the
-  // restore wanted; pending: still as before it; conflicts: neither.
+  // For a restore, pull or open that wrote files: where each file is now.
+  // done: as the operation wanted; pending: still as before it; conflicts:
+  // neither.
   files: z.strictObject({ total: Count, done: Count, pending: Count, conflicts: Excerpt }).nullable(),
   strategies: z.array(RecoveryStrategy).max(2),
   // Safe to complete without asking: Draft Tide does it before the next

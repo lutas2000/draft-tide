@@ -145,7 +145,7 @@ export interface LiveFile extends FileState {
 
 // Every file in scope with its content id, read the way a save reads it.
 // Anything that would stop a save stops the plan.
-async function readLiveFolder(
+export async function readLiveFolder(
   ctx: ProjectContext,
   projectId: ProjectId,
   repo: ProjectGit,
@@ -196,7 +196,7 @@ async function readLiveFolder(
 }
 
 // The folder's own `.drafttide.json`, which must name this project.
-async function currentConfig(
+export async function currentConfig(
   workspace: Workspace,
   projectId: ProjectId,
 ): Promise<{ config: ProjectConfig; oid: GitOid }> {
@@ -392,12 +392,17 @@ export function restoreFingerprint(args: {
   );
 }
 
-function stale(reason: string, message: string): DtError {
+export function stale(reason: string, message: string): DtError {
   return new DtError('PLAN_STALE', message, { reason });
 }
 
 // The plan a caller names, for this project, still unused and unexpired.
-export function usablePlan(ctx: ProjectContext, projectId: ProjectId, planId: PlanId, kind: 'restore' | 'recovery') {
+export function usablePlan(
+  ctx: ProjectContext,
+  projectId: ProjectId | null,
+  planId: PlanId,
+  kind: 'restore' | 'recovery' | 'pull' | 'open',
+) {
   const plan = ctx.store.getPlan(planId);
   if (!plan || plan.record.kind !== kind) {
     throw new DtError('INVALID_ARGUMENT', `no ${kind} plan has this id`, { reason: 'unknown-plan' });
@@ -810,7 +815,7 @@ export function createRestoreService(ctx: ProjectContext, recovery: RecoveryGate
           operationId,
           origin,
           kind: 'pre-restore',
-          identity: ctx.identity,
+          identity: await ctx.commitIdentity(),
           clock,
           signal,
           onPublish: (intent) => move('publishing', { publish: intent }),
@@ -970,7 +975,7 @@ export async function recordRestore(
       tree,
       parents: [parent],
       message: formatCommitMessage(metadata),
-      identity: ctx.identity,
+      identity: await ctx.commitIdentity(),
       time: createdAt,
     });
   } catch (e) {

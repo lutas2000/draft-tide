@@ -9,9 +9,11 @@ import { PreviewArtifact, PreviewStatus } from './preview.ts';
 import { FolderReview, ProjectStatus } from './project.ts';
 import { ProjectConfig } from './project-config.ts';
 import { ClientMessage, Discovery, EngineMessage } from './protocol.ts';
+import { AuthStatus, RemoteBinding, SyncStatus } from './remote.ts';
 import { RecoveryPlan, RecoveryReport, RestorePlan, RestoreProgress, RestoreResult } from './restore.ts';
 import { CaptureProgress, RepoBlocker, RepoWarning, UnsupportedEntry } from './scope.ts';
 import { CommitIdentity, SaveProgress, SnapshotMetadata } from './snapshot.ts';
+import { PushReview, SyncProgress } from './sync.ts';
 
 // Every schema published as JSON Schema, by file name. Each operation exports
 // its input and its result envelope.
@@ -48,6 +50,11 @@ export function publicSchemas(): Record<string, z.ZodType> {
     'operation-list': OperationList,
     'preview-artifact': PreviewArtifact,
     'preview-status': PreviewStatus,
+    'auth-status': AuthStatus,
+    'remote-binding': RemoteBinding,
+    'sync-status': SyncStatus,
+    'push-review': PushReview,
+    'sync-progress': SyncProgress,
   };
   for (const name of Object.keys(OPERATIONS) as OperationName[]) {
     const spec = OPERATIONS[name];

@@ -26,16 +26,17 @@ export function App() {
       )}
       {route.name === 'project' && (
         <ProjectScreen
-          key={route.projectId}
+          key={`${route.projectId}\n${route.connectRequestId ?? ''}`}
           projectId={route.projectId}
           navigate={setRoute}
           {...(route.notice ? { notice: route.notice } : {})}
+          {...(route.connectRequestId ? { connectRequestId: route.connectRequestId } : {})}
         />
       )}
       {route.name === 'compare' && (
         <CompareScreen projectId={route.projectId} from={route.from} to={route.to} navigate={setRoute} />
       )}
-      {route.name === 'account' && <AccountScreen />}
+      {route.name === 'account' && <AccountScreen navigate={setRoute} />}
       {route.name === 'settings' && <SettingsScreen connection={state} navigate={setRoute} />}
     </AppShell>
   );

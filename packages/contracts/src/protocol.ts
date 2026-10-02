@@ -2,8 +2,10 @@ import { z } from 'zod';
 import { AgentAccess, Channel } from './engine.ts';
 import { ErrorCodeSchema, ErrorInfo } from './errors.ts';
 import { EngineInstanceId, OperationId, ProjectId, RequestId } from './ids.ts';
+import { LoginOutcome } from './remote.ts';
 import { RestoreProgress } from './restore.ts';
 import { Origin, SaveProgress } from './snapshot.ts';
+import { SyncProgress } from './sync.ts';
 
 // Engine protocol: length-framed JSON over a Unix domain socket or Windows
 // named pipe (TECH_STACK §3.2). No HTTP. A 4-byte big-endian length precedes
@@ -81,7 +83,15 @@ export const ResponseMessage = z.union([
 export type ResponseMessage = z.infer<typeof ResponseMessage>;
 
 // Long operations the Engine reports while they run.
-export const PROGRESS_OPERATIONS = ['snapshot.create', 'restore.apply', 'recovery.apply'] as const;
+export const PROGRESS_OPERATIONS = [
+  'snapshot.create',
+  'restore.apply',
+  'recovery.apply',
+  'remote.connectApply',
+  'sync.push',
+  'sync.pullApply',
+  'remote.openApply',
+] as const;
 const ProgressOperation = z.enum(PROGRESS_OPERATIONS);
 
 //   completed           done
@@ -98,17 +108,18 @@ export const EngineEvent = z.discriminatedUnion('name', [
   z.strictObject({
     name: z.literal('project.changed'),
     projectId: ProjectId,
-    reason: z.enum(['bound', 'saved', 'restored', 'recovered']),
+    reason: z.enum(['bound', 'saved', 'restored', 'recovered', 'pulled']),
   }),
   // Throttled; every stage change is reported. Carries no file names. A
-  // restore or recovery reports RestoreProgress, a save SaveProgress.
+  // restore or recovery reports RestoreProgress, a save SaveProgress, a sync
+  // operation SyncProgress.
   z.strictObject({
     name: z.literal('operation.progress'),
     operationId: OperationId,
     projectId: ProjectId,
     operation: ProgressOperation,
     origin: Origin,
-    progress: z.union([SaveProgress, RestoreProgress]),
+    progress: z.union([SaveProgress, RestoreProgress, SyncProgress]),
   }),
   // The operation ended (or stopped part-way). Status and history say what
   // is true now.
@@ -124,6 +135,11 @@ export const EngineEvent = z.discriminatedUnion('name', [
   // Agent requests, notices or operations needing recovery came or went:
   // re-read operation.list.
   z.strictObject({ name: z.literal('operations.changed') }),
+  // Sign-in changed: re-read auth.status. login says how a device login the
+  // app started ended.
+  z.strictObject({ name: z.literal('auth.changed'), login: LoginOutcome.nullable() }),
+  // A project's remote or sync state changed: re-read remote.status.
+  z.strictObject({ name: z.literal('remote.changed'), projectId: ProjectId }),
 ]);
 export type EngineEvent = z.infer<typeof EngineEvent>;
 

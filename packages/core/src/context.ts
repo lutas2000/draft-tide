@@ -2,6 +2,7 @@ import {
   DRAFT_TIDE_IDENTITY,
   DtError,
   PLAN_TTL_MS,
+  commitIdentityFor,
   type Activity,
   type CommitIdentity,
   type EngineEvent,
@@ -11,6 +12,7 @@ import {
   type ProjectSummary,
   type RestoreProgress,
   type SaveProgress,
+  type SyncProgress,
 } from '@draft-tide/contracts';
 import { buildLineIndex, type LineIndex } from './history.ts';
 import { createJournal, type Journal } from './journal.ts';
@@ -21,6 +23,7 @@ import type {
   LocalStore,
   ProjectGit,
   ProjectHost,
+  RemoteProvider,
   RepoProbe,
   TestHooks,
   Workspace,
@@ -38,7 +41,10 @@ export interface ProjectServiceOptions {
   clock: Clock;
   events: EventSink;
   guards?: ProjectWriteGuards;
-  // Before GitHub sign-in (M1-07), the fixed Draft Tide identity.
+  // GitHub (M1-07); without it nobody can sign in and nothing syncs.
+  remote?: RemoteProvider | undefined;
+  // Tests only: every commit gets this identity. Otherwise the signed-in
+  // user's, or Draft Tide's fixed one.
   identity?: CommitIdentity;
   // At most one progress event per operation this often (and on every stage
   // change).
@@ -64,14 +70,27 @@ export interface WriteRun {
   pastPointOfNoReturn(): void;
 }
 
-type ProgressOperation = 'snapshot.create' | 'restore.apply' | 'recovery.apply';
+type ProgressOperation =
+  | 'snapshot.create'
+  | 'restore.apply'
+  | 'recovery.apply'
+  | 'remote.connectApply'
+  | 'sync.push'
+  | 'sync.pullApply'
+  | 'remote.openApply';
 
 export interface ProjectContext {
   readonly store: LocalStore;
   readonly host: ProjectHost;
   readonly clock: Clock;
   readonly guards: ProjectWriteGuards;
-  readonly identity: CommitIdentity;
+  // One network operation (fetch, push, connect) per project at a time. Not
+  // the write guard: pushing writes no working file and must not wait
+  // behind a save.
+  readonly syncGuards: ProjectWriteGuards;
+  readonly remote: RemoteProvider | null;
+  // The author and committer of the next commit (M1 plan §6.1).
+  commitIdentity(): Promise<CommitIdentity>;
   readonly journal: Journal;
   readonly hooks: TestHooks;
   readonly options: ProjectServiceOptions;
@@ -95,9 +114,9 @@ export interface ProjectContext {
   // null: not running in this Engine.
   cancel(operationId: OperationId): 'cancelling' | 'too-late' | null;
   progressReporter(
-    op: ActiveOperation & { projectId: ProjectId },
+    op: Pick<ActiveOperation, 'operationId' | 'origin'> & { projectId: ProjectId },
     operation: ProgressOperation,
-  ): (progress: SaveProgress | RestoreProgress) => void;
+  ): (progress: SaveProgress | RestoreProgress | SyncProgress) => void;
 }
 
 interface Running {
@@ -127,7 +146,14 @@ export function createProjectContext(options: ProjectServiceOptions): ProjectCon
     host,
     clock,
     guards,
-    identity: options.identity ?? DRAFT_TIDE_IDENTITY,
+    syncGuards: createProjectWriteGuards(),
+    remote: options.remote ?? null,
+    async commitIdentity() {
+      if (options.identity) return options.identity;
+      if (!options.remote) return DRAFT_TIDE_IDENTITY;
+      const account = await options.remote.account();
+      return commitIdentityFor(account.state === 'signed-out' ? null : account.user);
+    },
     journal: createJournal(store, clock),
     hooks: options.testHooks ?? {},
     options,

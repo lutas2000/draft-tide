@@ -3,7 +3,13 @@ import { useState, type ReactNode } from 'react';
 import type { OperationStatus } from '@draft-tide/contracts';
 import type { ConnectionState } from '../../shared/bridge.ts';
 import { Agent, Alert, Check } from '../components/icons.tsx';
-import { isConnectRequest, useAnswerRequest, type ConnectRequest } from '../components/operation-banners.tsx';
+import {
+  GitHubRequestBanner,
+  isConnectRequest,
+  isGitHubRequest,
+  useAnswerRequest,
+  type ConnectRequest,
+} from '../components/operation-banners.tsx';
 import { ConfirmDialog } from '../components/ui/alert-dialog.tsx';
 import { Badge } from '../components/ui/badge.tsx';
 import { Button } from '../components/ui/button.tsx';
@@ -219,28 +225,37 @@ function PreviewCard() {
 }
 
 // Agent requests waiting for the user (M1 plan §4.1, §9.1). Answering one is
-// connecting a folder: picked in the native dialog, then reviewed.
+// connecting a folder (picked in the native dialog, then reviewed), signing
+// in to GitHub, or connecting a project to a repository.
 function RequestsCard({ navigate }: { navigate: Navigate }) {
   const list = useOperationList();
   const requests = list.data?.requests.filter(isConnectRequest) ?? [];
+  const github = list.data?.requests.filter(isGitHubRequest) ?? [];
   return (
     <Card>
       <CardHeader
         title="agent 請求的待處理操作"
-        description="agent 只能請求連接新的資料夾；由你選擇資料夾、確認保存範圍後連接，或拒絕。"
-        action={requests.length > 0 ? <Badge tone="agent">{requests.length} 個</Badge> : undefined}
+        description="agent 只能請求連接新的資料夾、登入 GitHub 或連接 GitHub repo；由你在這裡完成，或拒絕。"
+        action={
+          requests.length + github.length > 0 ? (
+            <Badge tone="agent">{requests.length + github.length} 個</Badge>
+          ) : undefined
+        }
       />
       <CardBody>
         {list.isError ? (
           <ErrorNote error={list.error} />
         ) : list.isPending ? (
           <p className="text-[13px] text-ink-3">讀取中…</p>
-        ) : requests.length === 0 ? (
+        ) : requests.length + github.length === 0 ? (
           <p className="text-[13px] text-ink-3">目前沒有等待中的請求。</p>
         ) : (
-          <div className="flex flex-col divide-y divide-line rounded-md border border-line">
+          <div className="flex flex-col divide-y divide-line overflow-hidden rounded-md border border-line">
             {requests.map((r) => (
               <RequestRow key={r.operationId} request={r} navigate={navigate} />
+            ))}
+            {github.map((r) => (
+              <GitHubRequestBanner key={r.operationId} request={r} navigate={navigate} />
             ))}
           </div>
         )}
@@ -286,7 +301,11 @@ function RequestRow({ request, navigate }: { request: ConnectRequest; navigate: 
 const ATTENTION_KIND: Record<OperationStatus['kind'], string> = {
   save: '保存版本',
   restore: '回復版本',
+  pull: '取得 GitHub 的更新',
+  open: '從 GitHub 開啟專案',
   'connect-request': '連接資料夾的請求',
+  'login-request': '登入 GitHub 的請求',
+  'remote-connect-request': '連接 GitHub repo 的請求',
 };
 
 // Operations that stopped part-way, in every project. Each project's page

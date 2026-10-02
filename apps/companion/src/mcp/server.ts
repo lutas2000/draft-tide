@@ -37,6 +37,13 @@ To restore a version: stop your own writes to the folder, call restore_plan, rea
 with its planId. Unsaved changes are saved as a pre-restore version first; tell the user which version that is.
 PLAN_STALE means files changed since the plan: plan again. UNTRACKED_FILES means files no version holds are in the way.
 RECOVERY_REQUIRED means an earlier change stopped part-way: recovery_inspect, then recovery_plan and recovery_apply.
+GitHub: you never handle a token, and only the user signs in (auth_login_request asks them) and connects a repository
+(remote_connect_request). remote_status says whether a project is synced. Once the user connected it, versions are
+pushed in the background after each save; sync_push pushes now. To get newer versions from GitHub, call
+sync_pull_plan, then sync_pull_apply: it only fast-forwards, and refuses with UNSAVED_CHANGES (save first).
+REMOTE_DIVERGED means GitHub and the folder both have new versions: nothing was changed; never try to merge or force,
+tell the user. remote_open_plan and remote_open_apply open a project from GitHub into a folder that doesn't exist yet
+or is empty. AUTH_REQUIRED and NETWORK_UNAVAILABLE never affect anything local.
 Report error codes to the user as they are; do not describe a failure or a warning as success.`;
 
 // engine.info → engine_info, snapshot.diffFile → snapshot_diff_file.

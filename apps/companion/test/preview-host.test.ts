@@ -12,6 +12,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createPreviewSupervisor, previewHostLaunch, type PreviewSupervisor } from '../src/engine/preview-host.ts';
 import { COMPANION } from './helpers.ts';
 
+const NO_GITHUB = { clientId: null, appSlug: null };
+
 const FAKE_HOST = join(COMPANION, 'test', 'fake-preview-host.ts');
 const RENDERER = previewRendererId('1.0.0', '2.0.0');
 
@@ -206,10 +208,12 @@ describe('the preview supervisor', () => {
       details: { reason: 'no-renderer' },
     });
     const env = { [PREVIEW_HOST_ENV]: JSON.stringify(launch()) };
-    expect(previewHostLaunch({ mode: 'development', appVersion: '0', desktopRequirement: null }, env)).toEqual(
-      launch(),
-    );
-    expect(previewHostLaunch({ mode: 'release', appVersion: '1', desktopRequirement: 'x' }, env)).toBeNull();
+    expect(
+      previewHostLaunch({ mode: 'development', appVersion: '0', desktopRequirement: null, github: NO_GITHUB }, env),
+    ).toEqual(launch());
+    expect(
+      previewHostLaunch({ mode: 'release', appVersion: '1', desktopRequirement: 'x', github: NO_GITHUB }, env),
+    ).toBeNull();
     for (const bad of [
       '{',
       '{"command":"node","args":[],"renderer":"r"}',
@@ -217,7 +221,7 @@ describe('the preview supervisor', () => {
     ]) {
       expect(
         previewHostLaunch(
-          { mode: 'development', appVersion: '0', desktopRequirement: null },
+          { mode: 'development', appVersion: '0', desktopRequirement: null, github: NO_GITHUB },
           { [PREVIEW_HOST_ENV]: bad },
         ),
         bad,

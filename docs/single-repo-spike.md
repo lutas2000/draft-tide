@@ -30,7 +30,7 @@ These product decisions came out of the discussion that led to this spike and ar
 | Does it stay correct when Git would rewrite content (LFS, filters, line endings)? | Raw bytes are kept; repos where Git would disagree are refused up front | C5, C7, C8, D3 |
 | Does a remote round trip work, including authentication through askpass? | **Yes against a local smart-HTTP server**. Push, fetch, clone-from-remote, fast-forward, divergence refused both ways, token never in argv / `.git` / data dir / output | F1–F7 |
 | Can an engineer use the result with plain Git? | Yes: a plain `git clone` shows the full history (including their own commits), the design files and `.drafttide.json`, with a clean `git status` | F1 |
-| Real GitHub? | **Not run.** TLS verification against github.com worked read-only (`ls-remote` of a public repo). Authenticated push needs a real token: run `node src/github-check.ts` yourself (env vars in the file header) | F9, `github-check.ts` |
+| Real GitHub? | **Yes (2026-10-02).** Push to a new branch, fetch through an ephemeral git dir, open-from-remote and branch delete all worked against a private github.com repo with askpass credentials (see Finding 8). Sign-in through a GitHub App's device flow also works (Finding 9) | F9, `github-check.ts`, `github-app-check.ts` |
 
 ## Findings M1 must absorb
 
@@ -52,7 +52,7 @@ Two residual risks remain and should be stated in M1: if the user deletes the "s
 
 ### 2. The packaged Git must be a full Git with https
 
-M0's trimmed Git (`spikes/m0/core/build/git`) has no `git-remote-http(s)`: `ls-remote` over HTTP fails with "'remote-http' is not a git command" (F8). The full dugite build has it, and TLS verification against github.com works with it on macOS (F9). Anything that trims the bundle for installer size must keep the https transport and a working CA trust path, and the size cost has to be re-measured. The full build's size was not measured here.
+M0's trimmed Git (`spikes/m0/core/build/git`) has no `git-remote-http(s)`: `ls-remote` over HTTP fails with "'remote-http' is not a git command" (F8). The full dugite build has it, and TLS verification against github.com works with it on macOS (F9). Anything that trims the bundle for installer size must keep the https transport and a working CA trust path, and the size cost has to be re-measured. Measured afterwards: Draft Tide needs 5.1 MiB of it on macOS arm64 (Finding 10).
 
 ### 3. Network work must not read the project's Git config
 
@@ -88,6 +88,75 @@ Why line endings: with `*.txt text` and a CRLF file, saving raw bytes leaves `gi
 - After a save the index has no stat data, so the next plain `git status` re-hashes files: 66–77 ms for 1,500 files / 12 MB.
 - Unicode file names (CJK, spaces, emoji, NFC and NFD forms) save correctly and leave `git status` clean on APFS (A10). Execute-bit-only changes are real changes (A11).
 
+### 8. Real GitHub round trip (2026-10-02)
+
+`src/github-check.ts` was run twice against `lutas2000/dt-github-check`, a throwaway private repo created empty for it, with dugite Git 2.53.0. The credential was the `gh` CLI's OAuth token (`gho_…`, scopes `repo`, `read:org`, `gist`, `admin:public_key`) with the username `x-access-token`, handed to Git through the askpass file.
+
+| Step | Run 1 (empty repo) | Run 2 |
+|---|---|---|
+| Save a version | ✓ | ✓ |
+| Push to a new `dt-spike-<random>` branch | ✓ (created) | ✓ (created) |
+| Fetch it back through an ephemeral git dir, tip matches | ✓ | ✓ |
+| Open the project from the remote into a second folder | ✓ (1 version) | ✓ (1 version) |
+| Delete the branch it created | ✗ | ✓ |
+
+What this settles and what it shows:
+- **The transport works on github.com.** https with TLS verification, Basic auth from askpass with `x-access-token` and an OAuth token, the ephemeral-git-dir fetch, and open-from-remote need no change from the local smart-HTTP results (F1–F7).
+- **The first push into an empty repo sets its default branch.** Run 1's branch became the default, and GitHub refuses to delete a default branch (`Cannot delete the default branch`, HTTP 422, confirmed through the REST API). Run 2 passed because the repo already had a default. M1-07: when Draft Tide connects an empty repo (the user creates it; Draft Tide doesn't create repos in M1), its first push must be the project's branch (`main` for new projects), so that branch becomes the default.
+- **Rejections need classifying.** The spike surfaced GitHub's refusal as a generic `GIT_FAILED`. M1-07 must read `[remote rejected] <reason>` from `git push --porcelain` and return `REMOTE_REJECTED` (M1 plan §10.3); branch protection and required signatures arrive the same way. Draft Tide itself never deletes remote branches.
+- **Not settled by this run.** Which flow and token type the product uses (settled by Finding 9; the `gh` token carries the broad `repo` scope that §10.1 avoids), token custody, 2FA, rate limits, branch protection, GitHub's 100 MiB file limit and push size limits. The token-hygiene checks (argv, `.git`, output) were not repeated here; they rely on the same code as F2.
+- **Left behind.** The repo keeps run 1's branch `dt-spike-26bfd583` as its default. It is kept for the sign-in tests.
+
+### 9. GitHub App sign-in through the device flow (2026-10-02)
+
+`src/github-app-check.ts` ran against a development GitHub App, `draft-tide-dev-lutas2000`: Contents read/write and Metadata read only, no webhook, Device Flow on, expiring user tokens, installed on `lutas2000/dt-github-check` only. A second private repo, `lutas2000/dt-github-check-uninstalled`, was created without the app. All 14 checks passed:
+
+| Check | Result |
+|---|---|
+| Device code and token with the client ID only (no secret) | ✓ user token `ghu_…`, empty scope, 8 h; refresh token `ghr_…`, 15,724,800 s (about 182 days) |
+| `GET /user` | ✓ login and id for the noreply address; this account's display name is empty |
+| `GET /user/installations` and its repositories | ✓ one installation (`selected`), listing only `dt-github-check` |
+| `GET /repos/<installed>` | ✓ `visibility: private` |
+| `GET /repos/<not installed>` | ✓ 404 |
+| Push / fetch / open-from-remote / delete of a new branch, `x-access-token` + askpass | ✓ |
+| Push to the repo without the app | ✓ refused (the spike maps it to `AUTH_REQUIRED`) |
+| Refresh with the client ID only | ✓ new access and refresh tokens |
+| Old access token after a refresh | 401 at once |
+| Old refresh token reused | refused (`incorrect_client_credentials`) |
+
+**Decided 2026-10-02:** sign-in uses this kind of GitHub App and its device flow (M1 plan §10.1). What it means for M1-07:
+- **Narrowest scope that works.** The token reaches only repos the app is installed on and the user can access; a desktop app holds no secret.
+- **The GUI can list repos.** After the user creates a repo and installs the app on it, Draft Tide picks from the installation's repositories instead of asking for a URL.
+- **Refresh rotates everything.** Every refresh voids the old refresh token and the old access token. The Engine runs one refresh at a time, stores the new refresh token in the keychain before using the new access token, and refreshes before a Git network operation, never during one.
+- **`permissions` is the user's role, not the token's.** The repo response said `admin: true`; push access is decided by the installation list.
+- **A missing installation is not a sign-in problem.** Pushing to a repo without the app came back as `AUTH_REQUIRED` here; the product returns `REMOTE_REJECTED` with `app-not-installed` and checks the list before pushing.
+- **Empty display name.** The commit identity falls back to the login.
+- **Sign-out is local.** Revoking a GitHub App user token on GitHub likely needs the client secret (not tried), so sign-out deletes the local token and points the user to GitHub's settings.
+- **Code entry.** The first time the code was typed by hand GitHub answered "couldn't find anything"; pasting it worked. The GUI offers a copy button.
+
+The tokens lived only in the script's memory. The authorization stays listed under the account's Authorized GitHub Apps until revoked there.
+
+### 10. The bundled Git, measured (2026-10-03)
+
+Source: dugite-native v2.53.0-4, macOS arm64 (`spikes/m0/core/node_modules/dugite/git`).
+
+| Build | On disk | tar.gz | tar.xz |
+|---|---|---|---|
+| Full dugite build | 148 MiB, 417 entries | 62 MB (release asset) | 41 MB (release `.lzma`) |
+| **What Draft Tide needs** | **5.1 MiB**, 2 files + 2 symlinks | **2.6 MiB** | **1.4 MiB** |
+| M0's trimmed build (no https) | 3.2 MiB | | |
+
+Almost all of the full build is Git Credential Manager with its .NET runtime (well over 100 MiB) and git-lfs (12 MB), neither of which Draft Tide uses. What it needs:
+- `bin/git` (3.4 MB; `libexec/git-core/git` is the same binary, shipped as a symlink to `bin/git`)
+- `libexec/git-core/git-remote-https` (2.0 MB; `git-remote-http` is byte-identical, shipped as a symlink)
+
+Results with exactly that set:
+- **Linkage.** Both binaries link only system libraries: `/usr/lib/libcurl.4.dylib`, `libz`, `libiconv`, `libexpat`, CoreFoundation and CoreServices. TLS goes through macOS's libcurl and the system trust, so no CA bundle or TLS library ships, and only these two Mach-Os need team signing.
+- **Hardened runtime.** Re-signed ad hoc with `-o runtime`, they run normally (a stand-in for the team signature: library validation has nothing but system libraries to admit).
+- **`GIT_EXEC_PATH` is required.** The build has no runtime prefix: `git --exec-path` prints `//libexec/git-core`, and without `GIT_EXEC_PATH` an https `ls-remote` fails with "remote helper 'https' aborted session". With it set, `ls-remote https://github.com/git/git` worked (TLS verified). The spike's `resolveGitRuntime` already sets the exec path. M1's git-backend leaves it null for `DRAFT_TIDE_GIT`, which works only because local operations need no helper.
+- **Suites.** This spike 48/48 with `DRAFT_TIDE_GIT_ROOT=<set>` and `SPIKE_TLS_CHECK=1`. M1's `vitest run` with `DRAFT_TIDE_GIT=<set>/bin/git`: 33 files, 495 passed, 3 skipped (Windows-only). `github-check.ts` against `lutas2000/dt-github-check`: push, fetch, open-from-remote and branch delete passed.
+- **Not measured.** macOS x64 (a universal binary roughly doubles the set), Windows (dugite's Windows build is MinGit-based and ships its own libcurl, OpenSSL and CA bundle, so its subset has to be worked out separately; the full release asset is 47 MB as tar.gz) and Linux. GPL-2.0 still applies: ship COPYING and a source offer.
+
 ## Timing (informational, one machine)
 
 | Case | Result |
@@ -102,8 +171,8 @@ The no-change and one-edit cases are dominated by the full rescan and re-hash th
 
 ## Not verified
 
-- **Real GitHub.** Authenticated push/fetch/clone against github.com with an OAuth token, the `x-access-token` username convention, 2FA behaviour, rate limits, branch protection and GitHub's file and push size limits. `spikes/single-repo/src/github-check.ts` exercises this against a throwaway repo and deletes the one branch it creates; it needs `DT_GITHUB_URL` and `DT_GITHUB_TOKEN` and was not run.
-- OAuth itself: which flow, which token type, token storage in the OS keychain, refresh and revocation. GitHub's documentation (read 2026-10-01) says the device flow needs no client secret but must be enabled in the app's settings, PKCE is supported for the web flow, and an OAuth App or classic PAT needs the `repo` scope to create a private repository. It does not say whether a GitHub App user token can create one; that has to be tried in M1-00. The `repo` scope covers all of a user's private repos, so a narrower option (the user picks an existing empty repo) should be weighed.
+- **Real GitHub, beyond the round trip.** Push, fetch, clone and branch delete with an OAuth token and `x-access-token` were verified on 2026-10-02 (Finding 8). Still untested: 2FA behaviour, rate limits, branch protection and GitHub's file and push size limits.
+- **Settled by Finding 9:** the flow (device flow), the token type (GitHub App user token) and refresh. Still open: token storage in the OS keychain, and revocation on GitHub. Earlier notes: GitHub's documentation (read 2026-10-01) says the device flow needs no client secret but must be enabled in the app's settings, PKCE is supported for the web flow, and an OAuth App or classic PAT needs the `repo` scope to create a private repository. The `repo` scope covers all of a user's private repos. **Decided 2026-10-02:** Draft Tide doesn't create repos in M1; the GUI guides the user to create an empty one on GitHub, so no repo-creation permission is needed. The token still needs push access to private repos: an OAuth App can only get that through `repo`, while a GitHub App user token reaches only the repos the app is installed on. Finding 9 then chose the GitHub App.
 - A secret scan before the first push, and a large-asset policy (GitHub limits vs "no fixed quotas"; real Git LFS usage was only detected, never run: `git-lfs` is not installed here).
 - Two designers editing concurrently, and what "explicit merge" means once directions exist.
 - Tracked symlinks (refused as `UNSUPPORTED_ENTRY`, same as M0), empty directories (Git does not store them), case-only renames on a case-insensitive volume.

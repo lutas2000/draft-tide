@@ -438,12 +438,144 @@ describe('the preview cache', () => {
     const v2 = await openLocalStore({ dataDir, migrations: MIGRATIONS.filter((m) => m.version <= 2) });
     v2.setAgentAccess(true, now());
     v2.close();
-    const v3 = await openLocalStore({ dataDir });
-    expect(v3.storageSchemaVersion).toBe(3);
-    expect(v3.getAgentAccess().enabled).toBe(true);
-    expect(v3.listPreviews()).toEqual([]);
-    v3.close();
+    const latest = await openLocalStore({ dataDir });
+    expect(latest.storageSchemaVersion).toBe(4);
+    expect(latest.getAgentAccess().enabled).toBe(true);
+    expect(latest.listPreviews()).toEqual([]);
+    latest.close();
     expect(readdirSync(dataDir).filter((f) => f.startsWith(`${STATE_DB_FILE}.backup-v2-`))).toHaveLength(1);
+  });
+});
+
+describe('remote bindings and the push queue (M1-07)', () => {
+  const projectId = ProjectId.parse(randomUUID());
+  const binding = {
+    provider: 'github' as const,
+    repoId: 7,
+    owner: 'designer',
+    name: 'site',
+    visibility: 'private' as const,
+    branch: 'main',
+    connectedAt: '2026-10-03T00:00:00.000Z',
+  };
+
+  it('keeps a binding, what was last seen of the remote and the last failure, across reopen', async () => {
+    const dataDir = tempDir();
+    const store = await openLocalStore({ dataDir });
+    const id = store.storeId();
+    expect(store.storeId()).toBe(id);
+    expect(store.getRemote(projectId)).toBeNull();
+    store.putRemote(projectId, binding);
+    store.updateRemoteState(projectId, {
+      remoteTip: 'a'.repeat(40),
+      lastCheckAt: '2026-10-03T00:00:01.000Z',
+      lastError: {
+        code: 'NETWORK_UNAVAILABLE',
+        reason: 'unreachable',
+        message: 'offline',
+        at: '2026-10-03T00:00:01.000Z',
+      },
+    });
+    store.close();
+    const again = await openLocalStore({ dataDir });
+    expect(again.storeId()).toBe(id);
+    expect(again.getRemote(projectId)).toEqual({
+      projectId,
+      remote: binding,
+      remoteTip: 'a'.repeat(40),
+      lastCheckAt: '2026-10-03T00:00:01.000Z',
+      lastPushAt: null,
+      lastError: {
+        code: 'NETWORK_UNAVAILABLE',
+        reason: 'unreachable',
+        message: 'offline',
+        at: '2026-10-03T00:00:01.000Z',
+      },
+    });
+    again.updateRemoteState(projectId, { lastError: null, lastPushAt: '2026-10-03T00:00:02.000Z' });
+    expect(again.getRemote(projectId)).toMatchObject({ lastError: null, lastPushAt: '2026-10-03T00:00:02.000Z' });
+    // Connecting another repository starts over.
+    again.putRemote(projectId, { ...binding, name: 'other' });
+    expect(again.getRemote(projectId)).toMatchObject({ remote: { name: 'other' }, remoteTip: null, lastPushAt: null });
+    expect(again.listRemotes()).toHaveLength(1);
+    again.close();
+  });
+
+  it('queues one push per project, defers it, and forgets it with the binding', async () => {
+    const store = await openLocalStore({ dataDir: tempDir() });
+    store.putRemote(projectId, binding);
+    store.queuePush(projectId, '2026-10-03T00:00:01.000Z');
+    store.deferPush(projectId, 2, null);
+    // A new request keeps the first request time and is due at once.
+    store.queuePush(projectId, '2026-10-03T00:00:05.000Z');
+    expect(store.getQueuedPush(projectId)).toEqual({
+      projectId,
+      requestedAt: '2026-10-03T00:00:01.000Z',
+      attempts: 2,
+      nextAttemptAt: '2026-10-03T00:00:05.000Z',
+    });
+    expect(store.listQueuedPushes()).toHaveLength(1);
+    store.deleteRemote(projectId);
+    expect(store.getRemote(projectId)).toBeNull();
+    expect(store.listQueuedPushes()).toEqual([]);
+    store.close();
+  });
+
+  it('refuses a binding it cannot read back: it is state, not a cache', async () => {
+    const dataDir = tempDir();
+    const store = await openLocalStore({ dataDir });
+    store.putRemote(projectId, binding);
+    store.close();
+    const raw = new Database(join(dataDir, STATE_DB_FILE));
+    raw.prepare('UPDATE remote_bindings SET data = ?').run('{"provider":"gitlab"}');
+    raw.close();
+    const again = await openLocalStore({ dataDir });
+    expect(() => again.getRemote(projectId)).toThrow(DtError);
+    again.close();
+  });
+
+  it('keeps plans through the migration, and takes plans without a project', async () => {
+    const dataDir = tempDir();
+    const v3 = await openLocalStore({ dataDir, migrations: MIGRATIONS.filter((m) => m.version <= 3) });
+    const planId = PlanId.parse(randomUUID());
+    v3.insertPlan({
+      planId,
+      projectId,
+      createdAt: now(),
+      expiresAt: now(),
+      fingerprint: 'f',
+      record: { kind: 'recovery', operationId: OperationId.parse(randomUUID()), strategy: 'finish' },
+      consumedBy: null,
+    });
+    v3.close();
+    const v4 = await openLocalStore({ dataDir });
+    expect(v4.getPlan(planId)?.projectId).toBe(projectId);
+    const openPlan = PlanId.parse(randomUUID());
+    v4.insertPlan({
+      planId: openPlan,
+      projectId: null,
+      createdAt: now(),
+      expiresAt: now(),
+      fingerprint: 'f',
+      record: {
+        kind: 'open',
+        repo: {
+          id: 1,
+          owner: 'designer',
+          name: 'site',
+          visibility: 'private',
+          defaultBranch: 'main',
+          htmlUrl: 'https://github.com/designer/site',
+        },
+        branch: 'main',
+        tip: 'b'.repeat(40),
+        destination: '/tmp/site',
+        existed: false,
+      },
+      consumedBy: null,
+    });
+    expect(v4.getPlan(openPlan)?.projectId).toBeNull();
+    v4.close();
   });
 });
 

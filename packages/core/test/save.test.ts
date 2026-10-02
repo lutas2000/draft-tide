@@ -147,6 +147,16 @@ class Repo extends World {
       },
       streamBlob: notUsed,
       isAncestor: notUsed,
+      remoteHeads: notUsed,
+      fetchBranch: notUsed,
+      pushBranch: notUsed,
+      trackingTip: notUsed,
+      clearTracking: notUsed,
+      objectsToPush: notUsed,
+      commitsBetween: notUsed,
+      mergeBase: notUsed,
+      readOrigin: notUsed,
+      setOrigin: notUsed,
     };
   }
 

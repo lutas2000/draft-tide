@@ -43,22 +43,25 @@ function actionsFor(item: RecoveryItem): Action[] {
   }
   return item.strategies.map((strategy): Action => {
     if (strategy === 'finish') {
-      return item.kind === 'restore'
-        ? { strategy, label: '完成回復', title: '完成回復？' }
-        : { strategy, label: '完成', title: '完成這個操作？' };
+      if (item.kind === 'restore') return { strategy, label: '完成回復', title: '完成回復？' };
+      if (item.kind === 'pull') return { strategy, label: '完成取得更新', title: '完成取得更新？' };
+      if (item.kind === 'open') return { strategy, label: '完成開啟', title: '完成從 GitHub 開啟？' };
+      return { strategy, label: '完成', title: '完成這個操作？' };
     }
     if (item.kind === 'lock') {
       return { strategy, label: '移除 Draft Tide 留下的鎖', title: '移除 Draft Tide 留下的鎖？' };
     }
-    return item.kind === 'restore'
-      ? { strategy, label: '還原成回復前的內容', title: '還原成回復前的內容？' }
-      : { strategy, label: '還原', title: '還原這個操作？' };
+    if (item.kind === 'restore') return { strategy, label: '還原成回復前的內容', title: '還原成回復前的內容？' };
+    if (item.kind === 'pull') return { strategy, label: '還原成取得更新前的內容', title: '還原成取得更新前的內容？' };
+    return { strategy, label: '還原', title: '還原這個操作？' };
   });
 }
 
 function itemTitle(item: RecoveryItem, entries: readonly HistoryEntry[]): string {
   if (item.kind === 'lock') return 'Draft Tide 留下的鎖（.git/index.lock）';
   if (item.kind === 'save') return '保存版本';
+  if (item.kind === 'pull') return '取得 GitHub 的更新';
+  if (item.kind === 'open') return '從 GitHub 開啟專案';
   return item.target ? `回復到 ${refLabel(entries, item.target)}` : '回復版本';
 }
 
@@ -217,7 +220,7 @@ function ItemRow({
       )}
       {files && (
         <p className="mt-1 text-ink-2">
-          {files.total} 個檔案：{files.done} 個已經是回復後的內容、{files.pending} 個還是回復前的內容
+          {files.total} 個檔案：{files.done} 個已經寫入、{files.pending} 個還沒寫入
           {files.conflicts.count > 0 && `、${files.conflicts.count} 個被其他程式改過`}。
         </p>
       )}

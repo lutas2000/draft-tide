@@ -5,6 +5,7 @@ import { CommitRef } from './history.ts';
 import { IsoTimestamp, OperationId, ProjectId } from './ids.ts';
 import { RelativePath } from './project-config.ts';
 import { Excerpt, FolderPath, ProjectName } from './project.ts';
+import { GitHubUser, RemoteBinding, RepoRef } from './remote.ts';
 import { Origin } from './snapshot.ts';
 
 // Operation states (M1 plan §9.3, TECH_STACK §6.4):
@@ -58,10 +59,26 @@ export function isTerminalState(state: OperationState): boolean {
   return TERMINAL_OPERATION_STATES.has(state);
 }
 
-//   save             saving a version
-//   restore          restoring a version (with its protection version)
-//   connect-request  an agent asked the user to connect a folder in the app
-export const OPERATION_KINDS = ['save', 'restore', 'connect-request'] as const;
+//   save                    saving a version
+//   restore                 restoring a version (with its protection version)
+//   pull                    fast-forwarding the folder to the remote's newer
+//                           versions (M1-07)
+//   open                    opening a project from GitHub into an empty
+//                           folder (M1-07)
+//   connect-request         an agent asked the user to connect a folder in
+//                           the app
+//   login-request           an agent asked the user to sign in to GitHub
+//   remote-connect-request  an agent asked the user to connect a project to
+//                           a GitHub repository
+export const OPERATION_KINDS = [
+  'save',
+  'restore',
+  'pull',
+  'open',
+  'connect-request',
+  'login-request',
+  'remote-connect-request',
+] as const;
 export const OperationKind = z.enum(OPERATION_KINDS);
 export type OperationKind = z.infer<typeof OperationKind>;
 
@@ -101,6 +118,25 @@ export const OperationStatus = z.discriminatedUnion('kind', [
     conflicts: Excerpt,
   }),
   z.strictObject({
+    kind: z.literal('pull'),
+    ...StatusBase,
+    // The newest commit before, and the remote commit the branch moves to.
+    from: CommitRef,
+    target: CommitRef,
+    // Files another program changed while the pull wrote them.
+    conflicts: Excerpt,
+  }),
+  z.strictObject({
+    kind: z.literal('open'),
+    ...StatusBase,
+    repo: RepoRef,
+    root: FolderPath,
+    target: CommitRef,
+    conflicts: Excerpt,
+    // The project, once it is connected to the folder.
+    project: ProjectSummary.nullable(),
+  }),
+  z.strictObject({
     kind: z.literal('connect-request'),
     ...StatusBase,
     // What the agent asked for. The folder is only a suggestion: nothing in
@@ -112,6 +148,18 @@ export const OperationStatus = z.discriminatedUnion('kind', [
     }),
     // The project the user connected in answer.
     project: ProjectSummary.nullable(),
+  }),
+  z.strictObject({
+    kind: z.literal('login-request'),
+    ...StatusBase,
+    // Who signed in, in answer.
+    user: GitHubUser.nullable(),
+  }),
+  z.strictObject({
+    kind: z.literal('remote-connect-request'),
+    ...StatusBase,
+    // The repository the user connected the project to, in answer.
+    remote: RemoteBinding.nullable(),
   }),
 ]);
 export type OperationStatus = z.infer<typeof OperationStatus>;
@@ -141,7 +189,7 @@ export const OperationList = z.strictObject({
 });
 export type OperationList = z.infer<typeof OperationList>;
 
-// ---- Asking the user to connect a folder (M1 plan §9.1)
+// ---- Asking the user to do what only the app may do (M1 plan §9.1)
 //
 // Connecting grants Draft Tide a folder, so only the user can do it, in the
 // app's native picker. The tool channel may only ask: the answer is always
@@ -153,3 +201,9 @@ export const ConnectRequestInput = z.strictObject({
   name: ProjectName.optional(),
   entryFiles: z.array(RelativePath).max(16).optional(),
 });
+
+// Signing in to GitHub and connecting a remote (with its first push) happen
+// only in the app (M1 plan §9.1, §10.1): the tool channel asks, the user
+// answers there.
+export const LoginRequestInput = z.strictObject({});
+export const RemoteConnectRequestInput = z.strictObject({ projectId: ProjectId });

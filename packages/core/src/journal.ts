@@ -18,9 +18,11 @@ import type { Clock, LocalStore, OperationRecord } from './ports.ts';
 const NEXT: Record<OperationState, readonly OperationState[]> = {
   planned: ['confirmed'],
   confirmed: ['preflight', 'failed', 'cancelled'],
-  preflight: ['publishing', 'protected', 'failed', 'cancelled'],
+  preflight: ['publishing', 'protected', 'staged', 'failed', 'cancelled'],
   // Saves and the pre-restore version publish from preflight; the restore
-  // version from verified.
+  // version, a pull and an open from verified. Pulls and opens have no
+  // protection step (a pull needs a folder without unsaved changes, an open
+  // an empty one).
   publishing: ['protected', 'committed', 'failed', 'superseded', 'recovery-required'],
   protected: ['staged', 'failed', 'cancelled'],
   staged: ['applying', 'failed', 'cancelled'],
@@ -120,6 +122,23 @@ export function operationStatusOf(rec: OperationRecord): OperationStatus {
       restored: j.restored,
       conflicts: j.conflicts ?? NO_CONFLICTS,
     };
+  } else if (j.kind === 'pull') {
+    status = { kind: 'pull', ...base, error: j.error, from: j.base, target: j.target, conflicts: j.conflicts };
+  } else if (j.kind === 'open') {
+    status = {
+      kind: 'open',
+      ...base,
+      error: j.error,
+      repo: j.remote,
+      root: j.root,
+      target: j.target,
+      conflicts: j.conflicts,
+      project: j.project,
+    };
+  } else if (j.kind === 'login-request') {
+    status = { kind: 'login-request', ...base, error: j.error, user: j.user };
+  } else if (j.kind === 'remote-connect-request') {
+    status = { kind: 'remote-connect-request', ...base, error: j.error, remote: j.remote };
   } else {
     status = {
       kind: 'connect-request',
@@ -134,6 +153,18 @@ export function operationStatusOf(rec: OperationRecord): OperationStatus {
   if (!checked.success) throw new DtError('STORAGE_IO_FAILED', 'an operation record could not be read');
   return checked.data;
 }
+
+// Requests the tool channel made for what only the user may do in the app.
+export const REQUEST_KINDS = ['connect-request', 'login-request', 'remote-connect-request'] as const;
+export type RequestKind = (typeof REQUEST_KINDS)[number];
+
+export function isRequestKind(kind: string): kind is RequestKind {
+  return (REQUEST_KINDS as readonly string[]).includes(kind);
+}
+
+// Operations that change a project's folder or history and are journaled
+// step by step (recovery looks at these).
+export const PROJECT_OPERATION_KINDS = ['save', 'restore', 'pull', 'open'] as const;
 
 export function isOpen(rec: OperationRecord): boolean {
   return !isTerminalState(rec.state) && rec.state !== 'awaiting-user';

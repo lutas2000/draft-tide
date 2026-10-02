@@ -27,6 +27,10 @@ const noHost: ProjectHost = {
   },
   createStaging: () => Promise.reject(new Error('not used')),
   clearOperationData: () => Promise.resolve(),
+  remoteHeads: () => Promise.reject(new Error('no network in this test')),
+  inspectDestination: () => Promise.reject(new Error('not used')),
+  prepareDestination: () => Promise.reject(new Error('not used')),
+  removeFreshRepo: () => Promise.resolve(),
 };
 
 function setup(projects: unknown[] = []) {
@@ -162,7 +166,21 @@ describe('engine core', () => {
       'operation.status',
       'operation.cancel',
       'project.connectRequest',
+      'auth.status',
+      'auth.loginRequest',
+      'remote.status',
+      'remote.connectRequest',
+      'sync.push',
+      'sync.pullPlan',
+      'sync.pullApply',
+      'remote.openPlan',
+      'remote.openApply',
     ]);
-    expect(core.operationsFor('desktop')).toEqual(OPERATION_NAMES.filter((n) => n !== 'project.connectRequest'));
+    // Requests are the tool channel's only: the app does the thing itself.
+    expect(core.operationsFor('desktop')).toEqual(
+      OPERATION_NAMES.filter(
+        (n) => n !== 'project.connectRequest' && n !== 'auth.loginRequest' && n !== 'remote.connectRequest',
+      ),
+    );
   });
 });

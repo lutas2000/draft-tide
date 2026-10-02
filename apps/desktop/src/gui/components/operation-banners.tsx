@@ -13,12 +13,17 @@ import { Button } from './ui/button.tsx';
 // or dismissed on its own, and the settings screen lists every request.
 
 export type ConnectRequest = Extract<OperationStatus, { kind: 'connect-request' }>;
-type RestoreNotice = Extract<OperationStatus, { kind: 'restore' }> & { projectId: ProjectId };
+export type GitHubRequest = Extract<OperationStatus, { kind: 'login-request' | 'remote-connect-request' }>;
+type RestoreNotice = Extract<OperationStatus, { kind: 'restore' | 'pull' | 'open' }> & { projectId: ProjectId };
 
 const SHOWN = 3;
 
 export function isConnectRequest(op: OperationStatus): op is ConnectRequest {
   return op.kind === 'connect-request';
+}
+
+export function isGitHubRequest(op: OperationStatus): op is GitHubRequest {
+  return op.kind === 'login-request' || op.kind === 'remote-connect-request';
 }
 
 // Answering a request: the user picks the folder in the native dialog (which
@@ -55,8 +60,12 @@ export function OperationBanners({ route, navigate }: { route: Route; navigate: 
     route.name === 'settings'
       ? []
       : list.data.requests.filter(isConnectRequest).filter((r) => r.operationId !== answering);
-  const notices = list.data.notices.filter((n): n is RestoreNotice => n.kind === 'restore' && n.projectId !== null);
-  if (requests.length === 0 && notices.length === 0) return null;
+  const github =
+    route.name === 'settings' || route.name === 'account' ? [] : list.data.requests.filter(isGitHubRequest);
+  const notices = list.data.notices.filter(
+    (n): n is RestoreNotice => (n.kind === 'restore' || n.kind === 'pull' || n.kind === 'open') && n.projectId !== null,
+  );
+  if (requests.length === 0 && github.length === 0 && notices.length === 0) return null;
 
   return (
     <section
@@ -65,6 +74,9 @@ export function OperationBanners({ route, navigate }: { route: Route; navigate: 
     >
       {requests.slice(0, SHOWN).map((r) => (
         <RequestBanner key={r.operationId} request={r} navigate={navigate} />
+      ))}
+      {github.slice(0, SHOWN).map((r) => (
+        <GitHubRequestBanner key={r.operationId} request={r} navigate={navigate} />
       ))}
       {requests.length > SHOWN && (
         <div className="flex items-center gap-3 bg-agent-soft px-5 py-1.5 text-[12px] text-ink-2">
@@ -112,8 +124,48 @@ function RequestBanner({ request, navigate }: { request: ConnectRequest; navigat
   );
 }
 
+// An agent asked the user to sign in to GitHub, or to connect a project to a
+// repository: only the user does either, here in the app.
+export function GitHubRequestBanner({ request, navigate }: { request: GitHubRequest; navigate: Navigate }) {
+  const projects = useProjects();
+  const decline = useDeclineRequest();
+  const name =
+    request.projectId !== null ? projects.data?.find((p) => p.projectId === request.projectId)?.name || '專案' : null;
+  const go = () =>
+    request.kind === 'login-request' || request.projectId === null
+      ? navigate({ name: 'account' })
+      : navigate({ name: 'project', projectId: request.projectId, connectRequestId: request.operationId });
+  return (
+    <div className="flex items-center gap-3 bg-agent-soft px-5 py-2 text-[13px] text-ink" role="status">
+      <Agent className="size-4 shrink-0 text-agent" />
+      <div className="min-w-0 flex-1">
+        <p className="truncate">
+          {request.kind === 'login-request'
+            ? 'Agent 請你登入 GitHub'
+            : `Agent 請你把「${name ?? '專案'}」連接到 GitHub repo`}
+        </p>
+        <p className="truncate text-[12px] text-ink-3">
+          經 {ORIGIN_LABEL[request.origin]} · {formatWhen(request.createdAt)}
+          {decline.isError && <span className="text-danger"> · 無法拒絕：{shortError(decline.error)}</span>}
+        </p>
+      </div>
+      <Button size="sm" variant="secondary" onClick={go} disabled={decline.isPending}>
+        {request.kind === 'login-request' ? '前往登入' : '前往連接'}
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={() => decline.mutate(request.operationId)}
+        disabled={decline.isPending}
+      >
+        拒絕
+      </Button>
+    </div>
+  );
+}
+
 // An agent's restore, naming the protection version that holds what the
-// folder had before.
+// folder had before; or an agent's pull of GitHub's newer versions.
 function NoticeBanner({ notice, navigate }: { notice: RestoreNotice; navigate: Navigate }) {
   const projects = useProjects();
   const history = useHistory(notice.projectId);
@@ -123,11 +175,20 @@ function NoticeBanner({ notice, navigate }: { notice: RestoreNotice; navigate: N
   const origin = ORIGIN_LABEL[notice.origin];
   const target = refLabel(entries, notice.target);
   const stopped = notice.state === 'recovery-required';
-  const text = stopped
-    ? `Agent 經 ${origin} 把「${name}」回復到 ${target} 時中途停止了，需要你完成或還原。`
-    : notice.protection
-      ? `Agent 經 ${origin} 把「${name}」回復到 ${target}；回復前的內容保存在 ${refLabel(entries, notice.protection)}。`
-      : `Agent 經 ${origin} 把「${name}」回復到 ${target}；回復前沒有未保存的變更。`;
+  const text =
+    notice.kind === 'open'
+      ? stopped
+        ? `Agent 經 ${origin} 從 GitHub 開啟 ${notice.repo.owner}/${notice.repo.name} 時中途停止了，需要你完成它。`
+        : `Agent 經 ${origin} 從 GitHub 把 ${notice.repo.owner}/${notice.repo.name} 開到 ${notice.root}，並連接成專案「${name}」。`
+      : notice.kind === 'pull'
+        ? stopped
+          ? `Agent 經 ${origin} 取得「${name}」在 GitHub 上的更新時中途停止了，需要你完成或還原。`
+          : `Agent 經 ${origin} 取得了「${name}」在 GitHub 上的更新（到 ${target}）。`
+        : stopped
+          ? `Agent 經 ${origin} 把「${name}」回復到 ${target} 時中途停止了，需要你完成或還原。`
+          : notice.protection
+            ? `Agent 經 ${origin} 把「${name}」回復到 ${target}；回復前的內容保存在 ${refLabel(entries, notice.protection)}。`
+            : `Agent 經 ${origin} 把「${name}」回復到 ${target}；回復前沒有未保存的變更。`;
   return (
     <div
       className={

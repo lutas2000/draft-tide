@@ -7,6 +7,7 @@ import { useProjects } from '../lib/engine-state.ts';
 import { formatWhen } from '../lib/format.ts';
 import type { Navigate } from '../lib/route.ts';
 import { ErrorNote } from './error-note.tsx';
+import { OpenFromGitHubDialog } from './open-dialog.tsx';
 
 // Entry points that later work packages enable. They are shown, but never as
 // working: M1 must not present a capability it doesn't have (M1 plan §5.1).
@@ -28,6 +29,7 @@ function LaterAction({ icon, title, body }: { icon: ReactNode; title: string; bo
 export function ProjectsScreen({ navigate }: { navigate: Navigate }) {
   const projects = useProjects();
   const [picking, setPicking] = useState(false);
+  const [opening, setOpening] = useState(false);
 
   const open = async () => {
     setPicking(true);
@@ -75,12 +77,23 @@ export function ProjectsScreen({ navigate }: { navigate: Navigate }) {
             title="試用範例"
             body="複製一份範例設計到你選的位置，跟著兩個步驟試用。"
           />
-          <LaterAction
-            icon={<Cloud className="size-5" />}
-            title="從 GitHub 開啟"
-            body="把已同步的專案開到一個空白資料夾，歷史完整保留。"
-          />
+          <button
+            type="button"
+            onClick={() => setOpening(true)}
+            className="flex flex-col gap-3 rounded-lg border border-line bg-surface p-5 text-left shadow-card transition hover:border-tide-400 hover:shadow-raised"
+          >
+            <span className="flex size-9 items-center justify-center rounded-md bg-tide-50 text-tide-600">
+              <Cloud className="size-5" />
+            </span>
+            <span>
+              <span className="block text-[15px] font-semibold text-ink">從 GitHub 開啟</span>
+              <span className="mt-1 block text-[13px] text-ink-2">
+                把已同步的專案開到一個空白資料夾，歷史完整保留。
+              </span>
+            </span>
+          </button>
         </div>
+        {opening && <OpenFromGitHubDialog navigate={navigate} onClose={() => setOpening(false)} />}
       </section>
 
       <section aria-labelledby="recent-title" className="flex flex-col gap-3">
