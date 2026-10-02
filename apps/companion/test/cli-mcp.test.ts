@@ -87,6 +87,7 @@ describe('MCP server', () => {
       'history_list',
       'operation_cancel',
       'operation_status',
+      'preview_read',
       'project_connect_request',
       'project_list',
       'project_restore_settings',
@@ -99,6 +100,7 @@ describe('MCP server', () => {
       'snapshot_create',
       'snapshot_diff',
       'snapshot_diff_file',
+      'snapshot_preview',
     ]);
     // Connecting a folder is the GUI's alone (the tool can only ask). Restore
     // and recovery apply overwrite files and say so; plans only read.
@@ -117,6 +119,7 @@ describe('MCP server', () => {
       });
     }
     expect(client.getInstructions()).toMatch(/AGENT_ACCESS_DISABLED/);
+    expect(client.getInstructions()).toMatch(/preview_read/);
     await client.close();
   });
 
