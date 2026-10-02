@@ -108,16 +108,32 @@ describe('the preview supervisor', () => {
     expect(out.environment).toMatchObject({ renderer: RENDERER, electron: '1.0.0', chromium: '2.0.0' });
     expect(files.asked.slice(0, 2)).toEqual(['/index.html', '/a.css']);
     // Built from scratch: no data directory, Git, tokens or anything else
-    // of the Engine's.
-    // (macOS adds __CF_USER_TEXT_ENCODING to every process itself.)
+    // of the Engine's. The OS adds its own: macOS __CF_USER_TEXT_ENCODING
+    // to every process, and on Windows libuv copies the variables a Windows
+    // process needs from the parent when they are missing.
     const env = decodeURIComponent(files.asked.find((p) => p.startsWith('/__env__/'))?.slice(9) ?? '')
       .split(',')
       .filter((k) => !k.startsWith('__CF_'));
-    expect(env).toEqual(
-      process.platform === 'win32'
-        ? ['APPDATA', 'DT_PREVIEW_SCRATCH', 'LOCALAPPDATA', 'SystemRoot', 'TEMP', 'TMP', 'USERPROFILE']
-        : ['DT_PREVIEW_SCRATCH', 'HOME', 'LANG', 'PATH', 'TMPDIR', 'TZ'],
-    );
+    if (process.platform === 'win32') {
+      const ours = ['APPDATA', 'DT_PREVIEW_SCRATCH', 'LOCALAPPDATA', 'SystemRoot', 'TEMP', 'TMP', 'USERPROFILE'];
+      const libuv = [
+        'HOMEDRIVE',
+        'HOMEPATH',
+        'LOGONSERVER',
+        'PATH',
+        'SYSTEMDRIVE',
+        'SYSTEMROOT',
+        'TEMP',
+        'USERDOMAIN',
+        'USERNAME',
+        'USERPROFILE',
+        'WINDIR',
+      ];
+      expect(env).toEqual(expect.arrayContaining(ours));
+      expect(env.filter((k) => !ours.includes(k) && !libuv.includes(k.toUpperCase()))).toEqual([]);
+    } else {
+      expect(env).toEqual(['DT_PREVIEW_SCRATCH', 'HOME', 'LANG', 'PATH', 'TMPDIR', 'TZ']);
+    }
     const scratch = decodeURIComponent(files.asked.find((p) => p.startsWith('/__scratch__/'))?.slice(13) ?? '');
     expect(existsSync(scratch)).toBe(true);
     s.stop();
