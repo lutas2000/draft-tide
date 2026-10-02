@@ -266,7 +266,8 @@ describe('refusing a restore', () => {
   it('refuses expired plans, unknown plans and plans of another project', async () => {
     const h = await harness({ planTtlMs: 0 });
     const a = await threeVersions(h);
-    const b = await threeVersions(h);
+    // Another project needs only to exist.
+    const b = { projectId: await connect(h, committedRepo()) };
     const plan = await h.call('restore.plan', { projectId: a.projectId, target: a.v1 });
     await new Promise((r) => setTimeout(r, 5));
     expect(await refusal(h.call('restore.apply', { projectId: a.projectId, planId: plan.planId }))).toMatchObject({
