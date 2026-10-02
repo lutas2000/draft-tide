@@ -35,11 +35,12 @@ describe('M1-04 operations in the catalog', () => {
     }
     expect(OPERATIONS['snapshot.create'].effect).toBe('write');
     expect(OPERATIONS['project.bind'].effect).toBe('write');
-    // Only restore and recovery apply overwrite or delete working files (M1-05).
+    // Only restore, recovery and pull apply overwrite or delete working files
+    // (M1-05, M1-07).
     const destructive = Object.entries(OPERATIONS)
       .filter(([, s]) => s.effect === 'destructive')
       .map(([n]) => n);
-    expect(destructive.sort()).toEqual(['recovery.apply', 'restore.apply']);
+    expect(destructive.sort()).toEqual(['recovery.apply', 'restore.apply', 'sync.pullApply']);
   });
 
   it('refuses self-asserted flags and unknown fields', () => {

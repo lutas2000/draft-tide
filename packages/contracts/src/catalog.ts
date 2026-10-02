@@ -20,10 +20,12 @@ import {
 } from './preview.ts';
 import {
   ConnectRequestInput,
+  LoginRequestInput,
   OperationCancelResult,
   OperationIdInput,
   OperationList,
   OperationStatus,
+  RemoteConnectRequestInput,
 } from './operation.ts';
 import {
   FolderReview,
@@ -45,6 +47,21 @@ import {
   RestorePlanInput,
   RestoreResult,
 } from './restore.ts';
+import { AuthStatus, RemoteRepoList, RemoteStatusInput, SyncStatus } from './remote.ts';
+import {
+  PushResult,
+  RemoteConnectApplyInput,
+  RemoteConnectPlan,
+  RemoteConnectPlanInput,
+  RemoteConnectResult,
+  RemoteOpenApplyInput,
+  RemoteOpenPlan,
+  RemoteOpenPlanInput,
+  RemoteOpenResult,
+  SyncPullPlan,
+  SyncPullPlanInput,
+  SyncPullResult,
+} from './sync.ts';
 
 // The one list of Engine operations. The Engine dispatches from it, the
 // policy in core authorizes from it, the CLI and MCP server are generated from
@@ -288,6 +305,148 @@ export const OPERATIONS = {
     output: OperationStatus,
     desktop: true,
     tool: 'none',
+    effect: 'write',
+  },
+  // GitHub sign-in (M1 plan §10.1): only in the trusted app. The tool channel
+  // reads who is signed in and may ask the user to sign in; no operation
+  // returns a token.
+  'auth.status': {
+    summary: 'Whether Draft Tide is signed in to GitHub, as whom, and the identity new versions are saved with.',
+    input: NoInput,
+    output: AuthStatus,
+    desktop: true,
+    tool: 'agent-access',
+    effect: 'read',
+  },
+  'auth.loginStart': {
+    summary: "Start signing in with GitHub's device flow: returns the code the user enters on github.com.",
+    input: NoInput,
+    output: AuthStatus,
+    desktop: true,
+    tool: 'none',
+    effect: 'write',
+  },
+  'auth.loginCancel': {
+    summary: 'Stop waiting for the device code to be entered.',
+    input: NoInput,
+    output: AuthStatus,
+    desktop: true,
+    tool: 'none',
+    effect: 'write',
+  },
+  'auth.logout': {
+    summary: "Sign out: remove the token from this computer's keychain.",
+    input: NoInput,
+    output: AuthStatus,
+    desktop: true,
+    tool: 'none',
+    effect: 'write',
+  },
+  'auth.loginRequest': {
+    summary:
+      'Ask the user to sign in to GitHub in the Draft Tide app. Answers CONFIRMATION_REQUIRED with an operation id; follow it with operation.status.',
+    input: LoginRequestInput,
+    output: z.never(),
+    desktop: false,
+    tool: 'agent-access',
+    effect: 'write',
+  },
+  // A project's remote (M1 plan §10.2–10.7). Connecting a repository and its
+  // first push only in the app; after that, pushes need nothing further.
+  'remote.repos': {
+    summary: "Repositories Draft Tide's GitHub App is installed on that the signed-in user can reach.",
+    input: NoInput,
+    output: RemoteRepoList,
+    desktop: true,
+    tool: 'none',
+    effect: 'read',
+  },
+  'remote.status': {
+    summary:
+      "A project's GitHub repository and sync state: synced, versions waiting to be pushed, newer versions on GitHub, diverged, signed out, refused or offline.",
+    input: RemoteStatusInput,
+    output: SyncStatus,
+    desktop: true,
+    tool: 'agent-access',
+    effect: 'read',
+  },
+  'remote.connectPlan': {
+    summary:
+      'Check a repository the user created before connecting it: how it relates to the project, its visibility, and what the first push sends.',
+    input: RemoteConnectPlanInput,
+    output: RemoteConnectPlan,
+    desktop: true,
+    tool: 'none',
+    effect: 'read',
+  },
+  'remote.connectApply': {
+    summary: 'Connect the repository as planned and push the project to it.',
+    input: RemoteConnectApplyInput,
+    output: RemoteConnectResult,
+    desktop: true,
+    tool: 'none',
+    effect: 'write',
+  },
+  'remote.connectRequest': {
+    summary:
+      'Ask the user to connect a project to a GitHub repository in the Draft Tide app. Answers CONFIRMATION_REQUIRED with an operation id; follow it with operation.status.',
+    input: RemoteConnectRequestInput,
+    output: z.never(),
+    desktop: false,
+    tool: 'agent-access',
+    effect: 'write',
+  },
+  'remote.disconnect': {
+    summary: "Stop syncing a project. Nothing is deleted here or on GitHub; the folder's Git settings stay.",
+    input: ProjectStatusInput,
+    output: SyncStatus,
+    desktop: true,
+    tool: 'none',
+    effect: 'write',
+  },
+  'sync.push': {
+    summary:
+      "Push the project's new versions to its GitHub repository now (fast-forward only; REMOTE_DIVERGED when GitHub has versions the folder doesn't).",
+    input: ProjectStatusInput,
+    output: PushResult,
+    desktop: true,
+    tool: 'agent-access',
+    effect: 'write',
+  },
+  'sync.pullPlan': {
+    summary:
+      'Check GitHub for newer versions and plan getting them: fast-forward only, never with unsaved changes in the folder.',
+    input: SyncPullPlanInput,
+    output: SyncPullPlan,
+    desktop: true,
+    tool: 'agent-access',
+    effect: 'read',
+  },
+  'sync.pullApply': {
+    summary:
+      "Apply a pull plan: the folder's files and branch move to GitHub's newer version. PLAN_STALE if anything changed since the plan.",
+    input: PlanApplyInput,
+    output: SyncPullResult,
+    desktop: true,
+    tool: 'agent-access',
+    effect: 'destructive',
+  },
+  'remote.openPlan': {
+    summary:
+      'Plan opening a project from a GitHub repository into a folder that does not exist yet or is empty (nothing is overwritten).',
+    input: RemoteOpenPlanInput,
+    output: RemoteOpenPlan,
+    desktop: true,
+    tool: 'agent-access',
+    effect: 'read',
+  },
+  'remote.openApply': {
+    summary:
+      'Apply an open plan: the repository is fetched, its files written into the empty folder, and the project connected.',
+    input: RemoteOpenApplyInput,
+    output: RemoteOpenResult,
+    desktop: true,
+    tool: 'agent-access',
     effect: 'write',
   },
   'agentAccess.get': {
