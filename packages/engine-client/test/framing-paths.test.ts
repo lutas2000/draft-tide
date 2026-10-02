@@ -1,7 +1,14 @@
 import fc from 'fast-check';
-import { MAX_FRAME_BYTES } from '@draft-tide/contracts';
+import { MAX_FRAME_BYTES, PREVIEW_HOST_MAX_BODY_BYTES, PREVIEW_HOST_MAX_HEADER_BYTES } from '@draft-tide/contracts';
 import { describe, expect, it } from 'vitest';
-import { FrameDecoder, FrameError, encodeFrame, runtimePaths } from '../src/index.ts';
+import {
+  FrameDecoder,
+  FrameError,
+  HostFrameDecoder,
+  encodeFrame,
+  encodeHostFrame,
+  runtimePaths,
+} from '../src/index.ts';
 
 describe('framing', () => {
   it('decodes any split of any sequence of messages', () => {
@@ -55,5 +62,54 @@ describe('runtimePaths', () => {
 
   it('uses a per-data-store named pipe on Windows', () => {
     expect(runtimePaths('C:\\Users\\a\\dt', 'win32').socket).toMatch(/^\\\\\.\\pipe\\draft-tide-[0-9a-f]{24}$/);
+  });
+});
+
+describe('Preview Host frames', () => {
+  it('decode any split of headers and bodies', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.tuple(fc.jsonValue(), fc.uint8Array({ maxLength: 300 })), { minLength: 1, maxLength: 6 }),
+        fc.array(fc.nat(), { maxLength: 12 }),
+        (frames, cuts) => {
+          const bytes = Buffer.concat(frames.map(([h, b]) => encodeHostFrame(h, b)));
+          const points = [...new Set(cuts.map((c) => c % (bytes.length + 1)))].sort((a, b) => a - b);
+          const decoder = new HostFrameDecoder();
+          const out: { header: unknown; body: Buffer }[] = [];
+          let prev = 0;
+          for (const p of [...points, bytes.length]) {
+            out.push(...decoder.push(bytes.subarray(prev, p)));
+            prev = p;
+          }
+          expect(out.map((f) => [f.header, [...f.body]])).toEqual(
+            frames.map(([h, b]) => [JSON.parse(JSON.stringify(h)) as unknown, [...b]]),
+          );
+        },
+      ),
+    );
+  });
+
+  it('joins a large body arriving in small chunks once', () => {
+    const body = Buffer.alloc(8 * 1024 * 1024, 3);
+    const bytes = encodeHostFrame({ type: 'image' }, body);
+    const decoder = new HostFrameDecoder();
+    const out = [];
+    for (let at = 0; at < bytes.length; at += 64 * 1024) out.push(...decoder.push(bytes.subarray(at, at + 64 * 1024)));
+    expect(out).toHaveLength(1);
+    expect(out[0]?.body.equals(body)).toBe(true);
+  });
+
+  it('refuses sizes over the limits before buffering, and headers that are not JSON', () => {
+    const lengths = Buffer.alloc(8);
+    lengths.writeUInt32BE(PREVIEW_HOST_MAX_HEADER_BYTES + 1, 0);
+    expect(() => new HostFrameDecoder().push(lengths)).toThrow(FrameError);
+    lengths.writeUInt32BE(10, 0);
+    lengths.writeUInt32BE(PREVIEW_HOST_MAX_BODY_BYTES + 1, 4);
+    expect(() => new HostFrameDecoder().push(lengths)).toThrow(FrameError);
+    const bad = Buffer.alloc(10);
+    bad.writeUInt32BE(2, 0);
+    bad.write('{x', 8);
+    expect(() => new HostFrameDecoder().push(bad)).toThrow(FrameError);
+    expect(() => encodeHostFrame({}, Buffer.alloc(PREVIEW_HOST_MAX_BODY_BYTES + 1))).toThrow(FrameError);
   });
 });

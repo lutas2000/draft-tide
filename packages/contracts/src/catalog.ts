@@ -11,6 +11,14 @@ import {
   SnapshotDiffInput,
 } from './history.ts';
 import {
+  PreviewArtifact,
+  PreviewCacheCleared,
+  PreviewChunk,
+  PreviewReadInput,
+  PreviewStatus,
+  SnapshotPreviewInput,
+} from './preview.ts';
+import {
   ConnectRequestInput,
   OperationCancelResult,
   OperationIdInput,
@@ -146,6 +154,43 @@ export const OPERATIONS = {
     desktop: true,
     tool: 'agent-access',
     effect: 'read',
+  },
+  // Previews (M1 plan §8): rendered by the isolated Preview Host, kept in a
+  // rebuildable cache. The tool channel gets the same artifact reference as
+  // the app: bound to the project, short-lived, never a path.
+  'snapshot.preview': {
+    summary:
+      "A picture of a version: its entry page (or one of its PNG/JPEG files) rendered offline at 1280×800 by the isolated Preview Host. Returns an artifact; read its PNG with preview.read. Lists what the page asked for and didn't get (missing, blocked).",
+    input: SnapshotPreviewInput,
+    output: PreviewArtifact,
+    desktop: true,
+    tool: 'agent-access',
+    effect: 'read',
+  },
+  'preview.read': {
+    summary:
+      "Part of a preview artifact's PNG (full or thumbnail), base64, from offset. Artifacts expire after 30 minutes.",
+    input: PreviewReadInput,
+    output: PreviewChunk,
+    desktop: true,
+    tool: 'agent-access',
+    effect: 'read',
+  },
+  'preview.status': {
+    summary: 'Whether this Engine can render previews, with what settings, and how much the preview cache holds.',
+    input: NoInput,
+    output: PreviewStatus,
+    desktop: true,
+    tool: 'none',
+    effect: 'read',
+  },
+  'preview.clearCache': {
+    summary: 'Remove every cached preview (they are rebuilt when needed).',
+    input: NoInput,
+    output: PreviewCacheCleared,
+    desktop: true,
+    tool: 'none',
+    effect: 'write',
   },
   // Restore and recovery write working files: plan, then apply (M1 plan
   // §9.2–9.4). The tool channel applies directly while agent access is on;

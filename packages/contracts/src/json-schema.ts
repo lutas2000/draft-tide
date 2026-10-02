@@ -5,6 +5,7 @@ import { envelopeSchema } from './envelope.ts';
 import { ErrorInfo, JsonValue } from './errors.ts';
 import { FileDiff, HistoryEntry, SavedSnapshot, SnapshotDiff } from './history.ts';
 import { OperationList, OperationStatus } from './operation.ts';
+import { PreviewArtifact, PreviewStatus } from './preview.ts';
 import { FolderReview, ProjectStatus } from './project.ts';
 import { ProjectConfig } from './project-config.ts';
 import { ClientMessage, Discovery, EngineMessage } from './protocol.ts';
@@ -45,6 +46,8 @@ export function publicSchemas(): Record<string, z.ZodType> {
     'recovery-plan': RecoveryPlan,
     'operation-status': OperationStatus,
     'operation-list': OperationList,
+    'preview-artifact': PreviewArtifact,
+    'preview-status': PreviewStatus,
   };
   for (const name of Object.keys(OPERATIONS) as OperationName[]) {
     const spec = OPERATIONS[name];
