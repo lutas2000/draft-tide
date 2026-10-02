@@ -12,6 +12,8 @@
 //   3. fetches that branch back through an ephemeral git dir and compares the tip
 //   4. opens the project from the remote into a second folder (clone path)
 //   5. deletes the branch it created
+// The repo must already have a default branch: the first push into an empty
+// repo makes the pushed branch the default, and GitHub refuses to delete it.
 // The token is read from the environment, handed to Git through an askpass
 // script in a 0700 temp dir, and never placed in argv, .git/config or the URL.
 import { randomBytes } from 'node:crypto';

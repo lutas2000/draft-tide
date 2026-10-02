@@ -30,7 +30,7 @@ These product decisions came out of the discussion that led to this spike and ar
 | Does it stay correct when Git would rewrite content (LFS, filters, line endings)? | Raw bytes are kept; repos where Git would disagree are refused up front | C5, C7, C8, D3 |
 | Does a remote round trip work, including authentication through askpass? | **Yes against a local smart-HTTP server**. Push, fetch, clone-from-remote, fast-forward, divergence refused both ways, token never in argv / `.git` / data dir / output | F1–F7 |
 | Can an engineer use the result with plain Git? | Yes: a plain `git clone` shows the full history (including their own commits), the design files and `.drafttide.json`, with a clean `git status` | F1 |
-| Real GitHub? | **Not run.** TLS verification against github.com worked read-only (`ls-remote` of a public repo). Authenticated push needs a real token: run `node src/github-check.ts` yourself (env vars in the file header) | F9, `github-check.ts` |
+| Real GitHub? | **Yes (2026-10-02).** Push to a new branch, fetch through an ephemeral git dir, open-from-remote and branch delete all worked against a private github.com repo with askpass credentials (see Finding 8). Token type and scope are still open | F9, `github-check.ts` |
 
 ## Findings M1 must absorb
 
@@ -88,6 +88,25 @@ Why line endings: with `*.txt text` and a CRLF file, saving raw bytes leaves `gi
 - After a save the index has no stat data, so the next plain `git status` re-hashes files: 66–77 ms for 1,500 files / 12 MB.
 - Unicode file names (CJK, spaces, emoji, NFC and NFD forms) save correctly and leave `git status` clean on APFS (A10). Execute-bit-only changes are real changes (A11).
 
+### 8. Real GitHub round trip (2026-10-02)
+
+`src/github-check.ts` was run twice against `lutas2000/dt-github-check`, a throwaway private repo created empty for it, with dugite Git 2.53.0. The credential was the `gh` CLI's OAuth token (`gho_…`, scopes `repo`, `read:org`, `gist`, `admin:public_key`) with the username `x-access-token`, handed to Git through the askpass file.
+
+| Step | Run 1 (empty repo) | Run 2 |
+|---|---|---|
+| Save a version | ✓ | ✓ |
+| Push to a new `dt-spike-<random>` branch | ✓ (created) | ✓ (created) |
+| Fetch it back through an ephemeral git dir, tip matches | ✓ | ✓ |
+| Open the project from the remote into a second folder | ✓ (1 version) | ✓ (1 version) |
+| Delete the branch it created | ✗ | ✓ |
+
+What this settles and what it shows:
+- **The transport works on github.com.** https with TLS verification, Basic auth from askpass with `x-access-token` and an OAuth token, the ephemeral-git-dir fetch, and open-from-remote need no change from the local smart-HTTP results (F1–F7).
+- **The first push into an empty repo sets its default branch.** Run 1's branch became the default, and GitHub refuses to delete a default branch (`Cannot delete the default branch`, HTTP 422, confirmed through the REST API). Run 2 passed because the repo already had a default. M1-07: when Draft Tide creates or connects an empty repo, its first push must be the project's branch (`main` for new projects), so that branch becomes the default.
+- **Rejections need classifying.** The spike surfaced GitHub's refusal as a generic `GIT_FAILED`. M1-07 must read `[remote rejected] <reason>` from `git push --porcelain` and return `REMOTE_REJECTED` (M1 plan §10.3); branch protection and required signatures arrive the same way. Draft Tide itself never deletes remote branches.
+- **Not settled by this run.** Which flow and token type the product uses (the `gh` token carries the broad `repo` scope that §10.1 wants to avoid), token custody, 2FA, rate limits, branch protection, GitHub's 100 MiB file limit and push size limits. The token-hygiene checks (argv, `.git`, output) were not repeated here; they rely on the same code as F2.
+- **Left behind.** The repo keeps run 1's branch `dt-spike-26bfd583` as its default. It is kept for the sign-in tests.
+
 ## Timing (informational, one machine)
 
 | Case | Result |
@@ -102,7 +121,7 @@ The no-change and one-edit cases are dominated by the full rescan and re-hash th
 
 ## Not verified
 
-- **Real GitHub.** Authenticated push/fetch/clone against github.com with an OAuth token, the `x-access-token` username convention, 2FA behaviour, rate limits, branch protection and GitHub's file and push size limits. `spikes/single-repo/src/github-check.ts` exercises this against a throwaway repo and deletes the one branch it creates; it needs `DT_GITHUB_URL` and `DT_GITHUB_TOKEN` and was not run.
+- **Real GitHub, beyond the round trip.** Push, fetch, clone and branch delete with an OAuth token and `x-access-token` were verified on 2026-10-02 (Finding 8). Still untested: 2FA behaviour, rate limits, branch protection and GitHub's file and push size limits.
 - OAuth itself: which flow, which token type, token storage in the OS keychain, refresh and revocation. GitHub's documentation (read 2026-10-01) says the device flow needs no client secret but must be enabled in the app's settings, PKCE is supported for the web flow, and an OAuth App or classic PAT needs the `repo` scope to create a private repository. It does not say whether a GitHub App user token can create one; that has to be tried in M1-00. The `repo` scope covers all of a user's private repos, so a narrower option (the user picks an existing empty repo) should be weighed.
 - A secret scan before the first push, and a large-asset policy (GitHub limits vs "no fixed quotas"; real Git LFS usage was only detected, never run: `git-lfs` is not installed here).
 - Two designers editing concurrently, and what "explicit merge" means once directions exist.
