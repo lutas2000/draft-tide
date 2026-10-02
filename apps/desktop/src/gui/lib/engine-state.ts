@@ -7,7 +7,15 @@ import {
   type Query,
 } from '@tanstack/react-query';
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import type { EngineEvent, OperationId, PlanId, ProjectId, RecoveryStrategy } from '@draft-tide/contracts';
+import type {
+  EngineEvent,
+  LoginOutcome,
+  OperationId,
+  PlanId,
+  ProjectId,
+  RecoveryStrategy,
+  RepoRef,
+} from '@draft-tide/contracts';
 import type { ConnectionState } from '../../shared/bridge.ts';
 import { bridge, engineCall } from './bridge.ts';
 
@@ -30,6 +38,10 @@ export const keys = {
   operations: ['operation.list'] as const,
   restorePlan: (projectId: string, target: string) => ['restore.plan', projectId, target] as const,
   recovery: (projectId: string) => ['recovery.inspect', projectId] as const,
+  auth: ['auth.status'] as const,
+  repos: ['remote.repos'] as const,
+  remote: (projectId: string) => ['remote.status', projectId] as const,
+  pullPlan: (projectId: string, nonce: number) => ['sync.pullPlan', projectId, nonce] as const,
 };
 
 // Everything a change to a project can move: its folder state, history,
@@ -43,7 +55,7 @@ function invalidateProject(client: QueryClient, projectId: string): void {
 
 // A restore plan is never re-read behind the user's back: each read makes a
 // new plan, and the one on screen is the one confirmed.
-const rereadable = (query: Query) => query.queryKey[0] !== 'restore.plan';
+const rereadable = (query: Query) => query.queryKey[0] !== 'restore.plan' && query.queryKey[0] !== 'sync.pullPlan';
 
 export function useEngineInfo() {
   return useQuery({ queryKey: keys.engineInfo, queryFn: () => engineCall('engine.info', {}) });
@@ -241,6 +253,137 @@ export function useDismissNotice() {
   });
 }
 
+// ---- GitHub sign-in and sync (M1 plan §10). Nothing optimistic here either:
+// a push or a pull shows as done only from the Engine's answer.
+
+export function useAuthStatus() {
+  return useQuery({ queryKey: keys.auth, queryFn: () => engineCall('auth.status', {}) });
+}
+
+function authMutation(op: 'auth.loginStart' | 'auth.loginCancel' | 'auth.logout') {
+  return function useAuthMutation() {
+    const client = useQueryClient();
+    return useMutation({
+      mutationFn: () => engineCall(op, {}),
+      onSuccess: (status) => client.setQueryData(keys.auth, status),
+      onSettled: () => {
+        void client.invalidateQueries({ queryKey: ['remote.status'] });
+        void client.invalidateQueries({ queryKey: keys.repos });
+      },
+    });
+  };
+}
+export const useLoginStart = authMutation('auth.loginStart');
+export const useLoginCancel = authMutation('auth.loginCancel');
+export const useLogout = authMutation('auth.logout');
+
+// How the last device login the app started ended (auth.changed).
+let loginOutcome: LoginOutcome | null = null;
+const loginListeners = new Set<() => void>();
+function setLoginOutcome(outcome: LoginOutcome | null): void {
+  loginOutcome = outcome;
+  for (const l of loginListeners) l();
+}
+export function useLoginOutcome(): [LoginOutcome | null, () => void] {
+  const value = useSyncExternalStore(
+    (listener) => {
+      loginListeners.add(listener);
+      return () => loginListeners.delete(listener);
+    },
+    () => loginOutcome,
+  );
+  return [value, () => setLoginOutcome(null)];
+}
+
+export function useRemoteRepos(enabled: boolean) {
+  return useQuery({ queryKey: keys.repos, queryFn: () => engineCall('remote.repos', {}), enabled, staleTime: 0 });
+}
+
+export function useRemoteStatus(projectId: ProjectId) {
+  return useQuery({ queryKey: keys.remote(projectId), queryFn: () => engineCall('remote.status', { projectId }) });
+}
+
+// Asks GitHub now; the answer (or the failure) lands in the status.
+export function useRemoteRefresh(projectId: ProjectId) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => engineCall('remote.status', { projectId, refresh: true }),
+    onSuccess: (status) => client.setQueryData(keys.remote(projectId), status),
+  });
+}
+
+export function useConnectPlan(projectId: ProjectId) {
+  return useMutation({ mutationFn: (repo: RepoRef) => engineCall('remote.connectPlan', { projectId, repo }) });
+}
+
+export function useConnectApply(projectId: ProjectId) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { planId: PlanId; setOrigin: boolean; requestId?: OperationId }) =>
+      engineCall('remote.connectApply', { projectId, ...input }),
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: keys.remote(projectId) });
+      void client.invalidateQueries({ queryKey: keys.operations });
+    },
+  });
+}
+
+export function useDisconnect(projectId: ProjectId) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => engineCall('remote.disconnect', { projectId }),
+    onSuccess: (status) => client.setQueryData(keys.remote(projectId), status),
+  });
+}
+
+export function usePush(projectId: ProjectId) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => engineCall('sync.push', { projectId }),
+    onSettled: () => void client.invalidateQueries({ queryKey: keys.remote(projectId) }),
+  });
+}
+
+// A pull plan is read once per dialog (nonce): what is shown is what is
+// confirmed.
+export function usePullPlan(projectId: ProjectId, nonce: number) {
+  return useQuery({
+    queryKey: keys.pullPlan(projectId, nonce),
+    queryFn: () => engineCall('sync.pullPlan', { projectId }),
+    staleTime: Infinity,
+    gcTime: 0,
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function usePullApply(projectId: ProjectId) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (planId: PlanId) => engineCall('sync.pullApply', { projectId, planId }),
+    onSettled: () => {
+      invalidateProject(client, projectId);
+      void client.invalidateQueries({ queryKey: keys.remote(projectId) });
+    },
+  });
+}
+
+export function useOpenPlan() {
+  return useMutation({
+    mutationFn: (input: { repo: RepoRef; destination: string }) => engineCall('remote.openPlan', input),
+  });
+}
+
+export function useOpenApply() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (planId: PlanId) => engineCall('remote.openApply', { planId }),
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: keys.projects });
+      void client.invalidateQueries({ queryKey: keys.operations });
+    },
+  });
+}
+
 // ---- Progress of running operations, per project, from Engine events: a
 // save's, a restore's or a recovery's.
 
@@ -261,6 +404,18 @@ export function useOperationProgress(projectId: string): ProgressEvent | null {
       return () => progressListeners.delete(listener);
     },
     () => progress.get(projectId) ?? null,
+  );
+}
+
+// The newest progress of an operation in any project: opening from GitHub
+// doesn't know its project until the Engine has read the repository.
+export function useProgressOf(operation: ProgressEvent['operation']): ProgressEvent | null {
+  return useSyncExternalStore(
+    (listener) => {
+      progressListeners.add(listener);
+      return () => progressListeners.delete(listener);
+    },
+    () => [...progress.values()].find((e) => e.operation === operation) ?? null,
   );
 }
 
@@ -299,7 +454,8 @@ export function useEngineConnection(): { state: ConnectionState; retry: () => vo
         void client.invalidateQueries({ queryKey: keys.status(event.projectId) });
         void client.invalidateQueries({ queryKey: keys.history(event.projectId) });
         void client.invalidateQueries({ queryKey: keys.operations });
-        if (event.reason === 'restored' || event.reason === 'recovered') {
+        void client.invalidateQueries({ queryKey: keys.remote(event.projectId) });
+        if (event.reason === 'restored' || event.reason === 'recovered' || event.reason === 'pulled') {
           void client.invalidateQueries({ queryKey: keys.recovery(event.projectId) });
         }
       } else if (event.name === 'operation.progress') {
@@ -312,6 +468,13 @@ export function useEngineConnection(): { state: ConnectionState; retry: () => vo
         }
       } else if (event.name === 'operations.changed') {
         void client.invalidateQueries({ queryKey: keys.operations });
+      } else if (event.name === 'auth.changed') {
+        if (event.login !== null) setLoginOutcome(event.login);
+        void client.invalidateQueries({ queryKey: keys.auth });
+        void client.invalidateQueries({ queryKey: keys.repos });
+        void client.invalidateQueries({ queryKey: ['remote.status'] });
+      } else if (event.name === 'remote.changed') {
+        void client.invalidateQueries({ queryKey: keys.remote(event.projectId) });
       }
     });
     return () => {

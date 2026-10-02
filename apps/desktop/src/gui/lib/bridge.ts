@@ -46,3 +46,12 @@ export async function engineCall<N extends DesktopOperationName>(
 export async function chooseFolder(defaultPath?: string): Promise<string | null> {
   return (await bridge()?.chooseFolder(defaultPath)) ?? null;
 }
+
+// A GitHub page in the browser; false outside the app or for anything else.
+export async function openExternal(url: string): Promise<boolean> {
+  return (await bridge()?.openExternal(url)) ?? false;
+}
+
+export async function copyText(text: string): Promise<boolean> {
+  return (await bridge()?.copyText(text)) ?? false;
+}

@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   PREVIEW_HOST_ENV,
+  TEST_GITHUB_ENV,
   errorEnvelope,
   okEnvelope,
   previewRendererId,
@@ -26,13 +27,18 @@ function previewHost(): PreviewHostLaunch {
 
 function launch(): EngineLaunch {
   if (BUILD.companion) {
-    // Development and e2e builds may name the Git to run; release builds use
-    // only the bundled one.
+    // Development and e2e builds may name the Git to run and a test GitHub
+    // (the E2E); release builds use only the bundled Git and github.com.
     const git = process.env['DRAFT_TIDE_GIT'];
+    const testGitHub = process.env[TEST_GITHUB_ENV];
     return {
       nodePath: BUILD.companion.nodePath,
       engineEntry: BUILD.companion.engineEntry,
-      env: { ...(git ? { DRAFT_TIDE_GIT: git } : {}), [PREVIEW_HOST_ENV]: JSON.stringify(previewHost()) },
+      env: {
+        ...(git ? { DRAFT_TIDE_GIT: git } : {}),
+        ...(testGitHub ? { [TEST_GITHUB_ENV]: testGitHub } : {}),
+        [PREVIEW_HOST_ENV]: JSON.stringify(previewHost()),
+      },
     };
   }
   // Packaged layout (M1-09): the bundled Node and the companion bundle sit in

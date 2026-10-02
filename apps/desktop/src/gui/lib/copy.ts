@@ -15,6 +15,7 @@ import type {
   RepoUnsupportedReason,
   RepoWarningReason,
   SnapshotKind,
+  SyncState,
   UnsupportedEntryKind,
 } from '@draft-tide/contracts';
 
@@ -89,6 +90,18 @@ export const ERROR_COPY: Partial<Record<ErrorCode, Copy>> = {
   RESOURCE_BUDGET_EXCEEDED: { title: '內容太多，無法在這裡顯示', next: '原始檔案與版本不受影響。' },
   PREVIEW_UNSUPPORTED: { title: '這個版本沒有可以預覽的畫面', next: '版本本身不受影響。' },
   PREVIEW_FAILED: { title: '無法產生預覽', next: '版本本身不受影響，可以再試一次。' },
+  // ---- GitHub (M1 plan §4.1, §10)
+  AUTH_REQUIRED: { title: '需要重新登入 GitHub，本機功能不受影響', next: '到「帳號與同步」登入 GitHub。' },
+  REMOTE_DIVERGED: {
+    title: '你和 GitHub 都有新版本，沒有做任何改動',
+    next: '兩邊的版本都完整保留。Draft Tide 目前不會合併兩邊的內容。',
+  },
+  REMOTE_REJECTED: { title: 'GitHub 拒絕了這次同步', next: '本機的版本不受影響。請看說明的原因。' },
+  NETWORK_UNAVAILABLE: {
+    title: '連不上 GitHub',
+    next: '版本都安全地保存在這台電腦上。連線恢復後 Draft Tide 會再試一次。',
+  },
+  UNSAVED_CHANGES: { title: '資料夾裡有還沒保存的變更', next: '先保存版本，再取得 GitHub 上的更新。' },
 };
 
 // Reason-specific copy where the code alone isn't enough.
@@ -131,6 +144,69 @@ export function errorCopy(code: ErrorCode, details: Record<string, unknown>): Co
     return {
       title: '資料夾已經切換到其他 branch',
       next: '在其他 Git 工具切換回原本的 branch 之後，再完成恢復。',
+    };
+  }
+  if (code === 'AUTH_REQUIRED' && reason === 'unavailable') {
+    return { title: '這個版本的 Draft Tide 無法登入 GitHub', next: '所有本機功能照常可用。' };
+  }
+  if (code === 'AUTH_REQUIRED' && reason === 'expired') {
+    return { title: 'GitHub 登入已過期或已被撤銷', next: '到「帳號與同步」重新登入；本機功能不受影響。' };
+  }
+  if (code === 'REMOTE_REJECTED' && reason === 'app-not-installed') {
+    return {
+      title: 'Draft Tide 的 GitHub App 沒有安裝在這個 repo 上',
+      next: '在 GitHub 把 Draft Tide 安裝到這個 repo（或確認 repo 名稱），再試一次。',
+    };
+  }
+  if (code === 'REMOTE_REJECTED' && reason === 'no-push-access') {
+    return {
+      title: '你的 GitHub 帳號不能推送到這個 repo',
+      next: '請 repo 的擁有者給你寫入權限，或改用自己建立的 repo。',
+    };
+  }
+  if (code === 'REMOTE_REJECTED' && reason === 'protected-branch') {
+    return {
+      title: 'GitHub 上這個 branch 的規則拒絕了推送',
+      next: '例如要求簽章或 pull request。調整 repo 的規則，或改用沒有這些規則的 repo。',
+    };
+  }
+  if (code === 'REMOTE_REJECTED' && reason === 'file-too-large') {
+    return {
+      title: '有檔案超過 GitHub 的 100 MiB 上限',
+      next: '本機保存不受影響。要同步，需要讓推送的歷史裡沒有這個檔案（縮小它，或改用其他儲存方式）。',
+    };
+  }
+  if (code === 'REMOTE_REJECTED' && reason === 'empty-repository') {
+    return { title: '這個 repo 是空的', next: '裡面還沒有任何版本可以開啟。' };
+  }
+  if (code === 'REMOTE_DIVERGED' && reason === 'unrelated-history') {
+    return {
+      title: '這個 repo 裡已經有和這個專案無關的內容',
+      next: '例如建立 repo 時加入了 README。請建立一個完全空白的 repo 再連接；兩邊都沒有改動。',
+    };
+  }
+  if (code === 'INVALID_ARGUMENT' && reason === 'destination-not-allowed') {
+    return {
+      title: '不能開到這個位置',
+      next: '隱藏資料夾與系統資料夾（例如 Library）不能存放專案，請選擇其他資料夾。',
+    };
+  }
+  if (code === 'UNTRACKED_FILES' && reason === 'destination-not-empty') {
+    return { title: '這個資料夾不是空的', next: '請選擇一個空資料夾，或建立新的資料夾；Draft Tide 不會覆蓋任何檔案。' };
+  }
+  if (code === 'INVALID_ARGUMENT' && reason === 'not-connected') {
+    return { title: '這個專案還沒有連接 GitHub repo', next: '在專案頁連接一個你在 GitHub 建立的 repo。' };
+  }
+  if (code === 'INVALID_ARGUMENT' && reason === 'branch-changed') {
+    return { title: '資料夾已經切換到其他 branch', next: '在其他 Git 工具切換回同步的 branch 之後，再取得更新。' };
+  }
+  if (code === 'INVALID_ARGUMENT' && reason === 'branch-name') {
+    return { title: '這個 branch 的名稱無法同步', next: '請改用只有英文字母、數字、- _ . / 的 branch 名稱。' };
+  }
+  if (code === 'CONFIG_INVALID' && reason === 'remote-settings') {
+    return {
+      title: 'GitHub 上最新的版本沒有這個專案的設定檔',
+      next: '取得它會讓資料夾脫離這個專案，所以沒有做任何改動。',
     };
   }
   if (code === 'UNSUPPORTED_ENTRY' && reason === 'version-not-restorable') {
@@ -300,6 +376,33 @@ export const RECOVERY_STAGE_LABEL: Record<string, string> = {
   publish: '記錄回復版本…',
 };
 
+// Pushing, getting updates and opening from GitHub.
+export const SYNC_STAGE_LABEL: Record<string, string> = {
+  fetch: '向 GitHub 取得版本…',
+  check: '檢查資料夾…',
+  apply: '寫入檔案…',
+  verify: '確認寫入的內容…',
+  publish: '更新版本歷史…',
+  push: '推送到 GitHub…',
+};
+
+// ---- GitHub sync (M1 plan §4.1 帳號與同步)
+
+export const SYNC_STATE_LABEL: Record<
+  SyncState,
+  { label: string; tone: 'ok' | 'warn' | 'danger' | 'neutral' | 'tide' }
+> = {
+  'not-connected': { label: '沒有異地備份', tone: 'warn' },
+  synced: { label: '已同步', tone: 'ok' },
+  pending: { label: '等待推送', tone: 'tide' },
+  pushing: { label: '推送中…', tone: 'tide' },
+  behind: { label: 'GitHub 有新版本', tone: 'tide' },
+  diverged: { label: '兩邊都有新版本', tone: 'danger' },
+  'needs-sign-in': { label: '需要登入', tone: 'warn' },
+  rejected: { label: '被 GitHub 拒絕', tone: 'danger' },
+  offline: { label: '離線', tone: 'warn' },
+};
+
 // ---- Previews (M1 plan §8). A preview that can't be made never says
 // anything about the version itself.
 
@@ -400,6 +503,8 @@ export const ACTIVITY_LABEL: Record<Activity, { self: string; agent: string }> =
   saving: { self: '保存中…', agent: '正在保存…' },
   restoring: { self: '回復中…', agent: '正在回復…' },
   recovering: { self: '恢復中…', agent: '正在恢復…' },
+  pulling: { self: '取得更新中…', agent: '正在取得更新…' },
+  opening: { self: '開啟中…', agent: '正在從 GitHub 開啟…' },
 };
 
 // "回復中…" from this window, "CLI 正在回復…" from an agent.

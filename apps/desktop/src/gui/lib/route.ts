@@ -6,7 +6,9 @@ export type Route =
   // requestId: the agent request (connect-request) that connecting answers.
   | { name: 'review'; root: string; requestId?: OperationId }
   // notice: why the first version wasn't saved right after connecting.
-  | { name: 'project'; projectId: ProjectId; notice?: ErrorInfo }
+  // connectRequestId: an agent asked the user to connect this project to a
+  // GitHub repository; the wizard opens.
+  | { name: 'project'; projectId: ProjectId; notice?: ErrorInfo; connectRequestId?: OperationId }
   | { name: 'compare'; projectId: ProjectId; from: string; to: string }
   | { name: 'account' }
   | { name: 'settings' };

@@ -97,7 +97,8 @@ describe('desktop app', () => {
     await page.getByText('引擎已連線').waitFor();
     await page.getByText('還沒有專案').waitFor();
     // Not-yet-built entry points are visible but marked, never clickable.
-    expect(await page.getByText('尚未提供').count()).toBe(2);
+    expect(await page.getByText('尚未提供').count()).toBe(1);
+    expect(await page.getByRole('button', { name: /從 GitHub 開啟/ }).isEnabled()).toBe(true);
     expect(await page.getByRole('button', { name: /開啟設計資料夾/ }).isEnabled()).toBe(true);
     await page.screenshot({ path: join(shots, 'projects.png') });
   });
@@ -120,7 +121,16 @@ describe('desktop app', () => {
     expect(probe).toEqual({
       require: 'undefined',
       process: 'undefined',
-      bridge: ['chooseFolder', 'connectionState', 'invoke', 'onConnection', 'onEvent', 'reconnect'],
+      bridge: [
+        'chooseFolder',
+        'connectionState',
+        'copyText',
+        'invoke',
+        'onConnection',
+        'onEvent',
+        'openExternal',
+        'reconnect',
+      ],
       unknownOp: 'UNKNOWN_OPERATION',
       badInput: 'INVALID_ARGUMENT',
     });
@@ -164,9 +174,11 @@ describe('desktop app', () => {
     expect(code).toBe('folder-not-chosen');
   });
 
-  it('shows the account screen without pretending sync exists', async () => {
+  it('offers GitHub sign-in on the account screen, as a skippable option', async () => {
     await page.getByRole('button', { name: '帳號與同步' }).click();
-    await page.getByText('沒有異地備份', { exact: false }).waitFor();
+    await page.getByText('登入 GitHub 是可略過的選項', { exact: false }).waitFor();
+    // Not signed in: this run never starts a sign-in (it would reach github.com).
+    await page.getByRole('button', { name: '登入 GitHub' }).waitFor();
     await page.screenshot({ path: join(shots, 'account.png') });
   });
 });
