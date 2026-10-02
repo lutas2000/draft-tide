@@ -30,7 +30,7 @@ These product decisions came out of the discussion that led to this spike and ar
 | Does it stay correct when Git would rewrite content (LFS, filters, line endings)? | Raw bytes are kept; repos where Git would disagree are refused up front | C5, C7, C8, D3 |
 | Does a remote round trip work, including authentication through askpass? | **Yes against a local smart-HTTP server**. Push, fetch, clone-from-remote, fast-forward, divergence refused both ways, token never in argv / `.git` / data dir / output | F1–F7 |
 | Can an engineer use the result with plain Git? | Yes: a plain `git clone` shows the full history (including their own commits), the design files and `.drafttide.json`, with a clean `git status` | F1 |
-| Real GitHub? | **Yes (2026-10-02).** Push to a new branch, fetch through an ephemeral git dir, open-from-remote and branch delete all worked against a private github.com repo with askpass credentials (see Finding 8). Token type and scope are still open | F9, `github-check.ts` |
+| Real GitHub? | **Yes (2026-10-02).** Push to a new branch, fetch through an ephemeral git dir, open-from-remote and branch delete all worked against a private github.com repo with askpass credentials (see Finding 8). Sign-in through a GitHub App's device flow also works (Finding 9) | F9, `github-check.ts`, `github-app-check.ts` |
 
 ## Findings M1 must absorb
 
@@ -104,8 +104,37 @@ What this settles and what it shows:
 - **The transport works on github.com.** https with TLS verification, Basic auth from askpass with `x-access-token` and an OAuth token, the ephemeral-git-dir fetch, and open-from-remote need no change from the local smart-HTTP results (F1–F7).
 - **The first push into an empty repo sets its default branch.** Run 1's branch became the default, and GitHub refuses to delete a default branch (`Cannot delete the default branch`, HTTP 422, confirmed through the REST API). Run 2 passed because the repo already had a default. M1-07: when Draft Tide connects an empty repo (the user creates it; Draft Tide doesn't create repos in M1), its first push must be the project's branch (`main` for new projects), so that branch becomes the default.
 - **Rejections need classifying.** The spike surfaced GitHub's refusal as a generic `GIT_FAILED`. M1-07 must read `[remote rejected] <reason>` from `git push --porcelain` and return `REMOTE_REJECTED` (M1 plan §10.3); branch protection and required signatures arrive the same way. Draft Tide itself never deletes remote branches.
-- **Not settled by this run.** Which flow and token type the product uses (the `gh` token carries the broad `repo` scope that §10.1 wants to avoid), token custody, 2FA, rate limits, branch protection, GitHub's 100 MiB file limit and push size limits. The token-hygiene checks (argv, `.git`, output) were not repeated here; they rely on the same code as F2.
+- **Not settled by this run.** Which flow and token type the product uses (settled by Finding 9; the `gh` token carries the broad `repo` scope that §10.1 avoids), token custody, 2FA, rate limits, branch protection, GitHub's 100 MiB file limit and push size limits. The token-hygiene checks (argv, `.git`, output) were not repeated here; they rely on the same code as F2.
 - **Left behind.** The repo keeps run 1's branch `dt-spike-26bfd583` as its default. It is kept for the sign-in tests.
+
+### 9. GitHub App sign-in through the device flow (2026-10-02)
+
+`src/github-app-check.ts` ran against a development GitHub App, `draft-tide-dev-lutas2000`: Contents read/write and Metadata read only, no webhook, Device Flow on, expiring user tokens, installed on `lutas2000/dt-github-check` only. A second private repo, `lutas2000/dt-github-check-uninstalled`, was created without the app. All 14 checks passed:
+
+| Check | Result |
+|---|---|
+| Device code and token with the client ID only (no secret) | ✓ user token `ghu_…`, empty scope, 8 h; refresh token `ghr_…`, 15,724,800 s (about 182 days) |
+| `GET /user` | ✓ login and id for the noreply address; this account's display name is empty |
+| `GET /user/installations` and its repositories | ✓ one installation (`selected`), listing only `dt-github-check` |
+| `GET /repos/<installed>` | ✓ `visibility: private` |
+| `GET /repos/<not installed>` | ✓ 404 |
+| Push / fetch / open-from-remote / delete of a new branch, `x-access-token` + askpass | ✓ |
+| Push to the repo without the app | ✓ refused (the spike maps it to `AUTH_REQUIRED`) |
+| Refresh with the client ID only | ✓ new access and refresh tokens |
+| Old access token after a refresh | 401 at once |
+| Old refresh token reused | refused (`incorrect_client_credentials`) |
+
+**Decided 2026-10-02:** sign-in uses this kind of GitHub App and its device flow (M1 plan §10.1). What it means for M1-07:
+- **Narrowest scope that works.** The token reaches only repos the app is installed on and the user can access; a desktop app holds no secret.
+- **The GUI can list repos.** After the user creates a repo and installs the app on it, Draft Tide picks from the installation's repositories instead of asking for a URL.
+- **Refresh rotates everything.** Every refresh voids the old refresh token and the old access token. The Engine runs one refresh at a time, stores the new refresh token in the keychain before using the new access token, and refreshes before a Git network operation, never during one.
+- **`permissions` is the user's role, not the token's.** The repo response said `admin: true`; push access is decided by the installation list.
+- **A missing installation is not a sign-in problem.** Pushing to a repo without the app came back as `AUTH_REQUIRED` here; the product returns `REMOTE_REJECTED` with `app-not-installed` and checks the list before pushing.
+- **Empty display name.** The commit identity falls back to the login.
+- **Sign-out is local.** Revoking a GitHub App user token on GitHub likely needs the client secret (not tried), so sign-out deletes the local token and points the user to GitHub's settings.
+- **Code entry.** The first time the code was typed by hand GitHub answered "couldn't find anything"; pasting it worked. The GUI offers a copy button.
+
+The tokens lived only in the script's memory. The authorization stays listed under the account's Authorized GitHub Apps until revoked there.
 
 ## Timing (informational, one machine)
 
@@ -122,7 +151,7 @@ The no-change and one-edit cases are dominated by the full rescan and re-hash th
 ## Not verified
 
 - **Real GitHub, beyond the round trip.** Push, fetch, clone and branch delete with an OAuth token and `x-access-token` were verified on 2026-10-02 (Finding 8). Still untested: 2FA behaviour, rate limits, branch protection and GitHub's file and push size limits.
-- OAuth itself: which flow, which token type, token storage in the OS keychain, refresh and revocation. GitHub's documentation (read 2026-10-01) says the device flow needs no client secret but must be enabled in the app's settings, PKCE is supported for the web flow, and an OAuth App or classic PAT needs the `repo` scope to create a private repository. The `repo` scope covers all of a user's private repos. **Decided 2026-10-02:** Draft Tide doesn't create repos in M1; the GUI guides the user to create an empty one on GitHub, so no repo-creation permission is needed. The token still needs push access to private repos: an OAuth App can only get that through `repo`, while a GitHub App user token reaches only the repos the app is installed on. The flow and token type are still open.
+- **Settled by Finding 9:** the flow (device flow), the token type (GitHub App user token) and refresh. Still open: token storage in the OS keychain, and revocation on GitHub. Earlier notes: GitHub's documentation (read 2026-10-01) says the device flow needs no client secret but must be enabled in the app's settings, PKCE is supported for the web flow, and an OAuth App or classic PAT needs the `repo` scope to create a private repository. The `repo` scope covers all of a user's private repos. **Decided 2026-10-02:** Draft Tide doesn't create repos in M1; the GUI guides the user to create an empty one on GitHub, so no repo-creation permission is needed. The token still needs push access to private repos: an OAuth App can only get that through `repo`, while a GitHub App user token reaches only the repos the app is installed on. Finding 9 then chose the GitHub App.
 - A secret scan before the first push, and a large-asset policy (GitHub limits vs "no fixed quotas"; real Git LFS usage was only detected, never run: `git-lfs` is not installed here).
 - Two designers editing concurrently, and what "explicit merge" means once directions exist.
 - Tracked symlinks (refused as `UNSUPPORTED_ENTRY`, same as M0), empty directories (Git does not store them), case-only renames on a case-insensitive volume.
