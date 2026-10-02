@@ -1,5 +1,6 @@
 import fc from 'fast-check';
 import type { DiffHunk, FileDiff, TreeFile } from '@draft-tide/contracts';
+import { diffArrays } from 'diff';
 import { describe, expect, it } from 'vitest';
 import {
   TEXT_DIFF_BUDGET,
@@ -137,8 +138,10 @@ describe('text decoding and lines', () => {
 });
 
 describe('diffFileContent', () => {
-  it('produces hunks that turn the old text into the new one', () => {
-    const lines = fc.array(fc.constantFrom('a', 'b', 'c', 'd', '', '<div>', '  x'), { maxLength: 40 });
+  it('produces hunks that turn the old text into the new one, with the shortest edit', () => {
+    // Lines both sides may share, and lines likely only one side has.
+    const line = fc.oneof(fc.constantFrom('a', 'b', 'c', 'd', '', '<div>', '  x'), fc.stringMatching(/^[e-z]{1,3}$/));
+    const lines = fc.array(line, { maxLength: 40 });
     fc.assert(
       fc.property(lines, lines, fc.boolean(), (a, b, finalBreak) => {
         const oldText = a.length ? `${a.join('\n')}\n` : '';
@@ -154,6 +157,10 @@ describe('diffFileContent', () => {
         const plus = t.hunks.flatMap((h) => h.lines).filter((l) => l.startsWith('+')).length;
         const minus = t.hunks.flatMap((h) => h.lines).filter((l) => l.startsWith('-')).length;
         expect([t.added, t.removed]).toEqual([plus, minus]);
+        // As short as jsdiff's own search over every line.
+        const plain = diffArrays(splitLines(oldText), splitLines(newText)) ?? [];
+        const edits = plain.filter((c) => c.added || c.removed).reduce((n, c) => n + c.value.length, 0);
+        expect(t.added + t.removed).toBe(edits);
         for (const h of t.hunks) {
           expect(h.lines.filter((l) => !l.startsWith('+')).length).toBe(h.oldLines);
           expect(h.lines.filter((l) => !l.startsWith('-')).length).toBe(h.newLines);
