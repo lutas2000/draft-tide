@@ -1,0 +1,17 @@
+{
+  "name": "@draft-tide/token-custody-spike",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Feasibility spike: keep the GitHub token in the keychain readable only by a Node SEA Engine with its own signing identity (macOS). Throwaway code, not product.",
+  "engines": {
+    "node": ">=24.11 <25"
+  },
+  "scripts": {
+    "typecheck": "../m0/core/node_modules/.bin/tsc -p .",
+    "verify": "node src/verify.ts"
+  },
+  "devDependencies": {
+    "postject": "1.0.0-alpha.6"
+  }
+}

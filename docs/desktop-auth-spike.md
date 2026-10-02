@@ -96,6 +96,8 @@ The Engine checks every desktop connection by code signature, whoever started it
    - Release builds leave `get-task-allow` off. The companion Node is re-signed with hardened runtime and JIT only, and native addons are team-signed ([re-verification](#developer-id-re-verification)).
 4. **Cost.** A small N-API addon in the companion that uses the Security framework and is loaded only there. Re-verified against a real Developer ID and a notarized build. Windows needs its own mechanism.
 
+**Settled on 2026-10-03:** the Node SEA candidate was verified and adopted; see [token-custody-spike.md](token-custody-spike.md).
+
 **Still open under P: token custody (finding 5).** The desktop cannot verify an Engine that runs on the shared companion Node, and the keychain can't tell the Engine apart from any other script on that Node. The candidate for the M1-00 keychain item is to build the Engine as a single executable (Node SEA) with its own signing identifier that cannot load other scripts, so that the keychain ACL and the desktop can both trust it by signature. Not verified: whether a SEA build ignores `NODE_OPTIONS` and Node command-line options, and whether it survives packaging and signing.
 
 ### S: the desktop starts the Engine (the spike's recommendation, not adopted)
