@@ -2,9 +2,10 @@ import { z } from 'zod';
 import { ProjectSummary } from './engine.ts';
 import { ErrorDetails } from './errors.ts';
 import { GitObjectId, HistoryEntry, ChangeKind } from './history.ts';
-import { IsoTimestamp, ProjectId } from './ids.ts';
+import { IsoTimestamp, OperationId, ProjectId } from './ids.ts';
 import { CONFIG_INVALID_REASONS, RelativePath } from './project-config.ts';
 import { RepoBlocker, RepoWarning, UnsupportedEntry } from './scope.ts';
+import { Origin } from './snapshot.ts';
 import { isSingleLine } from './text.ts';
 
 // Connecting a design folder and reading its state (M1 plan §2.1, §6.2). The
@@ -108,6 +109,9 @@ export const ProjectBindInput = z.strictObject({
   // The user chose to connect a copied folder as a project of its own: a new
   // projectId is written into its `.drafttide.json`.
   asNewProject: z.boolean().optional(),
+  // The agent request this answers (connect-request): it completes with the
+  // project connected here.
+  requestId: OperationId.optional(),
 });
 
 export const ProjectBindResult = z.strictObject({
@@ -141,6 +145,10 @@ export const FOLDER_STATES = [
 export const FolderState = z.enum(FOLDER_STATES);
 export type FolderState = z.infer<typeof FolderState>;
 
+// What a running change to a project is doing.
+export const ACTIVITIES = ['saving', 'restoring', 'recovering'] as const;
+export type Activity = (typeof ACTIVITIES)[number];
+
 export const StatusChange = z.strictObject({
   path: DisplayPath,
   change: ChangeKind,
@@ -162,11 +170,15 @@ export const ProjectStatus = z.strictObject({
   tip: HistoryEntry.nullable(),
   blockers: z.array(RepoBlocker).max(64),
   warnings: z.array(RepoWarning).max(16),
-  // A save that didn't finish left Draft Tide's lock in `.git`; saving is
-  // refused until recovery completes it (M1-05).
+  // An operation stopped part-way (its journal says so, or Draft Tide's lock
+  // is still in `.git`): saving and restoring are refused until recovery
+  // completes or rolls it back (recovery.inspect says what is left).
   recoveryRequired: z.boolean(),
-  // A save of this project is running or queued.
-  saving: z.boolean(),
+  // The change to this project that is running now, if any; more may wait
+  // behind it.
+  activeOperation: z
+    .strictObject({ operationId: OperationId, activity: z.enum(ACTIVITIES), origin: Origin })
+    .nullable(),
   // The folder compared with the newest commit: what the next save would
   // record. null when it can't be computed (folder, repo or settings
   // unavailable, or the repo can't be used).
@@ -186,3 +198,13 @@ export const ProjectStatus = z.strictObject({
 export type ProjectStatus = z.infer<typeof ProjectStatus>;
 
 export const ProjectStatusInput = z.strictObject({ projectId: ProjectId });
+
+// `.drafttide.json` was deleted from the folder: put back the copy the newest
+// version holds (M1-05). Only while the file is absent, so nothing is
+// overwritten.
+export const SettingsRestored = z.strictObject({
+  projectId: ProjectId,
+  // The commit whose settings file came back.
+  from: GitObjectId,
+});
+export type SettingsRestored = z.infer<typeof SettingsRestored>;

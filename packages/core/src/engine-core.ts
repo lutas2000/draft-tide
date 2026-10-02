@@ -11,9 +11,13 @@ import {
   type OperationOutput,
   type OperationParsedInput,
 } from '@draft-tide/contracts';
+import { createProjectContext, type ProjectServiceOptions } from './context.ts';
+import { createOperationService } from './operations.ts';
 import { authorize } from './policy.ts';
 import type { CorePorts } from './ports.ts';
-import { createProjectService, type ProjectServiceOptions } from './projects.ts';
+import { createProjectService } from './projects.ts';
+import { createRecoveryService } from './recovery.ts';
+import { createRestoreService } from './restore.ts';
 
 interface CallContext {
   channel: Channel;
@@ -32,7 +36,14 @@ export interface EngineCore {
   handle(channel: Channel, op: string, payload: unknown): Promise<unknown>;
   // Operations a session on this channel may call, before agent-access checks.
   operationsFor(channel: Channel): OperationName[];
+  // At Engine start, before requests: completes what unfinished operations
+  // left that needs no decision (M1 plan §9.4), and forgets old records.
+  startup(): Promise<{ recovered: { projectId: string; error: string | null }[] }>;
 }
+
+// Ended operations and unused plans are kept this long, for status and
+// notices; unfinished ones are never removed.
+const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 const ORIGIN: Record<Channel, Origin> = { desktop: 'gui', cli: 'cli', mcp: 'mcp' };
 
@@ -41,7 +52,11 @@ export function createEngineCore(
   projectOptions: Omit<ProjectServiceOptions, 'store' | 'host' | 'clock' | 'events'> = {},
 ): EngineCore {
   const { clock, store, events, identity, host } = ports;
-  const projects = createProjectService({ ...projectOptions, store, host, clock, events });
+  const ctx = createProjectContext({ ...projectOptions, store, host, clock, events });
+  const recovery = createRecoveryService(ctx);
+  const projects = createProjectService(ctx, recovery);
+  const restore = createRestoreService(ctx, recovery);
+  const operations = createOperationService(ctx);
 
   const handlers: Handlers = {
     'engine.info': (_input, ctx) => ({
@@ -57,12 +72,28 @@ export function createEngineCore(
     }),
     'project.list': () => store.listProjects(),
     'project.review': (input) => projects.review(input.root),
-    'project.bind': (input) => projects.bind(input),
+    'project.bind': async (input) => {
+      const result = await projects.bind(input);
+      if (input.requestId) operations.completeRequest(input.requestId, result.project);
+      return result;
+    },
     'project.status': (input) => projects.status(input.projectId),
+    'project.restoreSettings': (input) => projects.restoreSettings(input.projectId),
     'snapshot.create': (input, ctx) => projects.save(input.projectId, input.name, ORIGIN[ctx.channel]),
     'history.list': (input) => projects.history(input.projectId, { skip: input.skip ?? 0, limit: input.limit ?? 50 }),
     'snapshot.diff': (input) => projects.diff(input.projectId, input.from, input.to),
     'snapshot.diffFile': (input) => projects.diffFile(input.projectId, input.from, input.to, input.path),
+    'restore.plan': (input) => restore.plan(input.projectId, input.target),
+    'restore.apply': (input, ctx) => restore.apply(input.projectId, input.planId, ORIGIN[ctx.channel]),
+    'recovery.inspect': (input) => recovery.inspect(input.projectId),
+    'recovery.plan': (input) => recovery.plan(input.projectId, input.operationId, input.strategy),
+    'recovery.apply': (input, ctx) => recovery.apply(input.projectId, input.planId, ORIGIN[ctx.channel]),
+    'operation.status': (input) => operations.status(input.operationId),
+    'operation.cancel': (input) => operations.cancel(input.operationId),
+    'project.connectRequest': (input, ctx) => operations.requestConnect(input, ORIGIN[ctx.channel]),
+    'operation.list': () => operations.list(),
+    'request.decline': (input) => operations.decline(input.operationId),
+    'operation.dismiss': (input) => operations.dismiss(input.operationId),
     'agentAccess.get': () => store.getAgentAccess(),
     'agentAccess.set': (input) => {
       const current = store.getAgentAccess();
@@ -99,6 +130,11 @@ export function createEngineCore(
     },
     operationsFor(channel) {
       return OPERATION_NAMES.filter((n) => isOfferedOn(n, isToolChannel(channel) ? 'tool' : 'desktop'));
+    },
+    async startup() {
+      const recovered = await recovery.recoverAll();
+      store.prune(new Date(Date.parse(clock.nowIso()) - RETENTION_MS).toISOString());
+      return { recovered };
     },
   };
 }

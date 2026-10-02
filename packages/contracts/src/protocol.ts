@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { AgentAccess, Channel } from './engine.ts';
 import { ErrorCodeSchema, ErrorInfo } from './errors.ts';
 import { EngineInstanceId, OperationId, ProjectId, RequestId } from './ids.ts';
+import { RestoreProgress } from './restore.ts';
 import { Origin, SaveProgress } from './snapshot.ts';
 
 // Engine protocol: length-framed JSON over a Unix domain socket or Windows
@@ -79,39 +80,50 @@ export const ResponseMessage = z.union([
 ]);
 export type ResponseMessage = z.infer<typeof ResponseMessage>;
 
-// Long operations the Engine reports while they run. Only saving in M1-04.
-export const PROGRESS_OPERATIONS = ['snapshot.create'] as const;
+// Long operations the Engine reports while they run.
+export const PROGRESS_OPERATIONS = ['snapshot.create', 'restore.apply', 'recovery.apply'] as const;
 const ProgressOperation = z.enum(PROGRESS_OPERATIONS);
+
+//   completed           done
+//   no-changes          nothing needed doing (NO_CHANGES)
+//   failed              stopped with the given code; see operation.status
+//   cancelled           stopped at a safe boundary on request
+//   recovery-required   stopped part-way; recovery completes or undoes it
+export const SETTLED_OUTCOMES = ['completed', 'no-changes', 'failed', 'cancelled', 'recovery-required'] as const;
 
 export const EngineEvent = z.discriminatedUnion('name', [
   z.strictObject({ name: z.literal('agentAccess.changed'), agentAccess: AgentAccess }),
-  // A project was connected, or a version saved through any channel: re-read
-  // its status and history.
+  // A project was connected, or its history or folder changed through any
+  // channel: re-read its status and history.
   z.strictObject({
     name: z.literal('project.changed'),
     projectId: ProjectId,
-    reason: z.enum(['bound', 'saved']),
+    reason: z.enum(['bound', 'saved', 'restored', 'recovered']),
   }),
-  // Throttled; every stage change is reported. Carries no file names.
+  // Throttled; every stage change is reported. Carries no file names. A
+  // restore or recovery reports RestoreProgress, a save SaveProgress.
   z.strictObject({
     name: z.literal('operation.progress'),
     operationId: OperationId,
     projectId: ProjectId,
     operation: ProgressOperation,
     origin: Origin,
-    progress: SaveProgress,
+    progress: z.union([SaveProgress, RestoreProgress]),
   }),
-  // The operation ended: completed, nothing to do (NO_CHANGES), or failed with
-  // the given code. Status and history say what is true now.
+  // The operation ended (or stopped part-way). Status and history say what
+  // is true now.
   z.strictObject({
     name: z.literal('operation.settled'),
     operationId: OperationId,
     projectId: ProjectId,
     operation: ProgressOperation,
     origin: Origin,
-    outcome: z.enum(['completed', 'no-changes', 'failed']),
+    outcome: z.enum(SETTLED_OUTCOMES),
     code: ErrorCodeSchema.nullable(),
   }),
+  // Agent requests, notices or operations needing recovery came or went:
+  // re-read operation.list.
+  z.strictObject({ name: z.literal('operations.changed') }),
 ]);
 export type EngineEvent = z.infer<typeof EngineEvent>;
 

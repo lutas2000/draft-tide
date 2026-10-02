@@ -163,6 +163,33 @@ export class World {
         this.write(PROJECT_CONFIG_FILE, Buffer.from(bytes));
         return Promise.resolve();
       },
+      writeFile: async (path, content, { mode, expected }) => {
+        const f = this.files.get(path);
+        if ((f ? oidOf(f.bytes) : null) !== expected) return { changed: true };
+        const chunks: Buffer[] = [];
+        for await (const c of content) chunks.push(Buffer.from(c));
+        this.write(path, Buffer.concat(chunks), mode === '100755');
+        return { changed: false };
+      },
+      removeFile: (path, expected) => {
+        const f = this.files.get(path);
+        if (!f || oidOf(f.bytes) !== expected) return Promise.resolve({ changed: true });
+        this.files.delete(path);
+        return Promise.resolve({ changed: false });
+      },
+      occupants: (paths) =>
+        Promise.resolve(
+          paths.map((p) => {
+            if (this.symlinks.has(p)) return 'link' as const;
+            if (this.files.has(p)) return 'file' as const;
+            return [...this.files.keys()].some((f) => f.startsWith(`${p}/`))
+              ? ('folder' as const)
+              : ('missing' as const);
+          }),
+        ),
+      exactNames: (paths) => Promise.resolve(paths.map((p) => this.files.has(p))),
+      listFolder: (path) =>
+        Promise.resolve({ entries: [...this.files.keys()].filter((f) => f.startsWith(`${path}/`)), complete: true }),
     };
   }
 

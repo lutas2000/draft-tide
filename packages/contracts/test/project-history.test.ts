@@ -35,9 +35,11 @@ describe('M1-04 operations in the catalog', () => {
     }
     expect(OPERATIONS['snapshot.create'].effect).toBe('write');
     expect(OPERATIONS['project.bind'].effect).toBe('write');
-    // Nothing in M1-04 overwrites or deletes working files.
-    const effects: string[] = Object.values(OPERATIONS).map((s) => s.effect);
-    expect(effects).not.toContain('destructive');
+    // Only restore and recovery apply overwrite or delete working files (M1-05).
+    const destructive = Object.entries(OPERATIONS)
+      .filter(([, s]) => s.effect === 'destructive')
+      .map(([n]) => n);
+    expect(destructive.sort()).toEqual(['recovery.apply', 'restore.apply']);
   });
 
   it('refuses self-asserted flags and unknown fields', () => {

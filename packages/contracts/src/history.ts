@@ -156,6 +156,15 @@ export const VersionInfo = z.strictObject({
 });
 export type VersionInfo = z.infer<typeof VersionInfo>;
 
+// A commit an operation made or used, with its snapshot id when it is a Draft
+// Tide version. Operation records keep this much; VersionInfo's number and
+// title are read from history when shown.
+export const CommitRef = z.strictObject({
+  commit: GitObjectId,
+  snapshotId: SnapshotId.nullable(),
+});
+export type CommitRef = z.infer<typeof CommitRef>;
+
 export const SnapshotDiffInput = z.strictObject({
   projectId: ProjectId,
   from: VersionRef,
