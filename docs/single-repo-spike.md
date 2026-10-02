@@ -52,7 +52,7 @@ Two residual risks remain and should be stated in M1: if the user deletes the "s
 
 ### 2. The packaged Git must be a full Git with https
 
-M0's trimmed Git (`spikes/m0/core/build/git`) has no `git-remote-http(s)`: `ls-remote` over HTTP fails with "'remote-http' is not a git command" (F8). The full dugite build has it, and TLS verification against github.com works with it on macOS (F9). Anything that trims the bundle for installer size must keep the https transport and a working CA trust path, and the size cost has to be re-measured. The full build's size was not measured here.
+M0's trimmed Git (`spikes/m0/core/build/git`) has no `git-remote-http(s)`: `ls-remote` over HTTP fails with "'remote-http' is not a git command" (F8). The full dugite build has it, and TLS verification against github.com works with it on macOS (F9). Anything that trims the bundle for installer size must keep the https transport and a working CA trust path, and the size cost has to be re-measured. Measured afterwards: Draft Tide needs 5.1 MiB of it on macOS arm64 (Finding 10).
 
 ### 3. Network work must not read the project's Git config
 
@@ -135,6 +135,27 @@ What this settles and what it shows:
 - **Code entry.** The first time the code was typed by hand GitHub answered "couldn't find anything"; pasting it worked. The GUI offers a copy button.
 
 The tokens lived only in the script's memory. The authorization stays listed under the account's Authorized GitHub Apps until revoked there.
+
+### 10. The bundled Git, measured (2026-10-03)
+
+Source: dugite-native v2.53.0-4, macOS arm64 (`spikes/m0/core/node_modules/dugite/git`).
+
+| Build | On disk | tar.gz | tar.xz |
+|---|---|---|---|
+| Full dugite build | 148 MiB, 417 entries | 62 MB (release asset) | 41 MB (release `.lzma`) |
+| **What Draft Tide needs** | **5.1 MiB**, 2 files + 2 symlinks | **2.6 MiB** | **1.4 MiB** |
+| M0's trimmed build (no https) | 3.2 MiB | | |
+
+Almost all of the full build is Git Credential Manager with its .NET runtime (well over 100 MiB) and git-lfs (12 MB), neither of which Draft Tide uses. What it needs:
+- `bin/git` (3.4 MB; `libexec/git-core/git` is the same binary, shipped as a symlink to `bin/git`)
+- `libexec/git-core/git-remote-https` (2.0 MB; `git-remote-http` is byte-identical, shipped as a symlink)
+
+Results with exactly that set:
+- **Linkage.** Both binaries link only system libraries: `/usr/lib/libcurl.4.dylib`, `libz`, `libiconv`, `libexpat`, CoreFoundation and CoreServices. TLS goes through macOS's libcurl and the system trust, so no CA bundle or TLS library ships, and only these two Mach-Os need team signing.
+- **Hardened runtime.** Re-signed ad hoc with `-o runtime`, they run normally (a stand-in for the team signature: library validation has nothing but system libraries to admit).
+- **`GIT_EXEC_PATH` is required.** The build has no runtime prefix: `git --exec-path` prints `//libexec/git-core`, and without `GIT_EXEC_PATH` an https `ls-remote` fails with "remote helper 'https' aborted session". With it set, `ls-remote https://github.com/git/git` worked (TLS verified). The spike's `resolveGitRuntime` already sets the exec path. M1's git-backend leaves it null for `DRAFT_TIDE_GIT`, which works only because local operations need no helper.
+- **Suites.** This spike 48/48 with `DRAFT_TIDE_GIT_ROOT=<set>` and `SPIKE_TLS_CHECK=1`. M1's `vitest run` with `DRAFT_TIDE_GIT=<set>/bin/git`: 33 files, 495 passed, 3 skipped (Windows-only). `github-check.ts` against `lutas2000/dt-github-check`: push, fetch, open-from-remote and branch delete passed.
+- **Not measured.** macOS x64 (a universal binary roughly doubles the set), Windows (dugite's Windows build is MinGit-based and ships its own libcurl, OpenSSL and CA bundle, so its subset has to be worked out separately; the full release asset is 47 MB as tar.gz) and Linux. GPL-2.0 still applies: ship COPYING and a source offer.
 
 ## Timing (informational, one machine)
 
