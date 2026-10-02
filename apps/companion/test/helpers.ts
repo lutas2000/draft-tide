@@ -83,7 +83,13 @@ export async function cleanupDataDirs(): Promise<void> {
   }
 }
 
-export function connectTo(dataDir: string, channel: Channel, idleMs = 2_000): Promise<EngineConnection> {
+// extraEnv reaches an Engine this call starts (a crash point, say).
+export function connectTo(
+  dataDir: string,
+  channel: Channel,
+  idleMs = 2_000,
+  extraEnv: Record<string, string> = {},
+): Promise<EngineConnection> {
   return connectEngine({
     channel,
     dataDir,
@@ -91,7 +97,7 @@ export function connectTo(dataDir: string, channel: Channel, idleMs = 2_000): Pr
     launch: {
       nodePath: process.execPath,
       engineEntry: ENGINE_SOURCE,
-      env: { DRAFT_TIDE_ENGINE_IDLE_MS: String(idleMs), DRAFT_TIDE_GIT: GIT_FOR_ENGINE },
+      env: { DRAFT_TIDE_ENGINE_IDLE_MS: String(idleMs), DRAFT_TIDE_GIT: GIT_FOR_ENGINE, ...extraEnv },
     },
   });
 }
