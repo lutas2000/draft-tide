@@ -16,7 +16,9 @@ export interface DraftTideBridge {
   invoke(op: string, payload: unknown): Promise<Envelope<unknown>>;
   // The native folder picker. A folder chosen here (and only one chosen here)
   // may then be reviewed and connected; null when the user cancels.
-  chooseFolder(): Promise<string | null>;
+  // defaultPath (absolute) is only where the dialog opens, for example the
+  // folder an agent asked for; it grants nothing.
+  chooseFolder(defaultPath?: string): Promise<string | null>;
   connectionState(): Promise<ConnectionState>;
   reconnect(): Promise<ConnectionState>;
   onEvent(listener: (e: BridgeEvent) => void): () => void;

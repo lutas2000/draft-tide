@@ -140,6 +140,14 @@ export const FileIcon = (p: IconProps) => (
   </Icon>
 );
 
+// Back to an earlier version: an arrow turning counter-clockwise.
+export const Undo = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M4.5 9.5h10a5 5 0 0 1 0 10h-4" />
+    <path d="M8.5 5.5l-4 4 4 4" />
+  </Icon>
+);
+
 export const Branch = (p: IconProps) => (
   <Icon {...p}>
     <circle cx="7" cy="6" r="2" />

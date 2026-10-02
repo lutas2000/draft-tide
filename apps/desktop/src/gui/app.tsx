@@ -16,7 +16,14 @@ export function App() {
   return (
     <AppShell route={route} onNavigate={setRoute} connection={state} onRetry={retry}>
       {route.name === 'home' && <ProjectsScreen navigate={setRoute} />}
-      {route.name === 'review' && <ReviewScreen key={route.root} root={route.root} navigate={setRoute} />}
+      {route.name === 'review' && (
+        <ReviewScreen
+          key={`${route.root}\n${route.requestId ?? ''}`}
+          root={route.root}
+          navigate={setRoute}
+          {...(route.requestId ? { requestId: route.requestId } : {})}
+        />
+      )}
       {route.name === 'project' && (
         <ProjectScreen
           key={route.projectId}
@@ -29,7 +36,7 @@ export function App() {
         <CompareScreen projectId={route.projectId} from={route.from} to={route.to} navigate={setRoute} />
       )}
       {route.name === 'account' && <AccountScreen />}
-      {route.name === 'settings' && <SettingsScreen connection={state} />}
+      {route.name === 'settings' && <SettingsScreen connection={state} navigate={setRoute} />}
     </AppShell>
   );
 }

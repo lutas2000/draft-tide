@@ -4,12 +4,13 @@ import { cn } from '../lib/cn.ts';
 import { errorCopy } from '../lib/copy.ts';
 
 // Every error gets a reason and a next step in designer terms (M1 plan §4.1).
-// The code is kept for diagnostics. NO_CHANGES is a notice, not a failure.
+// The code is kept for diagnostics. NO_CHANGES and CANCELLED (the user asked
+// to stop) are notices, not failures.
 export function ErrorNote({ error, className }: { error: unknown; className?: string }) {
   const code = error instanceof DtError ? error.code : 'INTERNAL_ERROR';
   const details = error instanceof DtError ? error.details : {};
   const copy = errorCopy(code, details);
-  const calm = code === 'NO_CHANGES';
+  const calm = code === 'NO_CHANGES' || code === 'CANCELLED';
   return (
     <div
       className={cn(

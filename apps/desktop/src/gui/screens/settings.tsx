@@ -1,12 +1,24 @@
 import { useState, type ReactNode } from 'react';
+import type { OperationStatus } from '@draft-tide/contracts';
 import type { ConnectionState } from '../../shared/bridge.ts';
-import { Agent } from '../components/icons.tsx';
+import { Agent, Alert } from '../components/icons.tsx';
+import { isConnectRequest, useAnswerRequest, type ConnectRequest } from '../components/operation-banners.tsx';
 import { ConfirmDialog } from '../components/ui/alert-dialog.tsx';
 import { Badge } from '../components/ui/badge.tsx';
+import { Button } from '../components/ui/button.tsx';
 import { Card, CardBody, CardHeader } from '../components/ui/card.tsx';
 import { Switch } from '../components/ui/switch.tsx';
-import { useAgentAccess, useEngineInfo, useSetAgentAccess } from '../lib/engine-state.ts';
+import { ORIGIN_LABEL } from '../lib/copy.ts';
+import {
+  useAgentAccess,
+  useDeclineRequest,
+  useEngineInfo,
+  useOperationList,
+  useProjects,
+  useSetAgentAccess,
+} from '../lib/engine-state.ts';
 import { formatWhen, shortId } from '../lib/format.ts';
+import type { Navigate } from '../lib/route.ts';
 import { ErrorNote } from './error-note.tsx';
 
 // The global agent-access switch (M1 plan §9.1). Turning it on is consent, so
@@ -136,19 +148,143 @@ function EngineCard({ connection }: { connection: ConnectionState }) {
   );
 }
 
-export function SettingsScreen({ connection }: { connection: ConnectionState }) {
+// Agent requests waiting for the user (M1 plan §4.1, §9.1). Answering one is
+// connecting a folder: picked in the native dialog, then reviewed.
+function RequestsCard({ navigate }: { navigate: Navigate }) {
+  const list = useOperationList();
+  const requests = list.data?.requests.filter(isConnectRequest) ?? [];
+  return (
+    <Card>
+      <CardHeader
+        title="agent 請求的待處理操作"
+        description="agent 只能請求連接新的資料夾；由你選擇資料夾、確認保存範圍後連接，或拒絕。"
+        action={requests.length > 0 ? <Badge tone="agent">{requests.length} 個</Badge> : undefined}
+      />
+      <CardBody>
+        {list.isError ? (
+          <ErrorNote error={list.error} />
+        ) : list.isPending ? (
+          <p className="text-[13px] text-ink-3">讀取中…</p>
+        ) : requests.length === 0 ? (
+          <p className="text-[13px] text-ink-3">目前沒有等待中的請求。</p>
+        ) : (
+          <div className="flex flex-col divide-y divide-line rounded-md border border-line">
+            {requests.map((r) => (
+              <RequestRow key={r.operationId} request={r} navigate={navigate} />
+            ))}
+          </div>
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
+function RequestRow({ request, navigate }: { request: ConnectRequest; navigate: Navigate }) {
+  const { answer, picking } = useAnswerRequest(navigate);
+  const decline = useDeclineRequest();
+  return (
+    <div className="flex flex-col gap-2 px-4 py-3">
+      <div className="flex items-start gap-3">
+        <Agent className="mt-0.5 size-4 shrink-0 text-agent" />
+        <div className="min-w-0 flex-1">
+          <p className="text-[13px] font-medium text-ink">連接資料夾</p>
+          <p className="truncate font-mono text-[12px] text-ink-2" title={request.request.root}>
+            {request.request.root}
+          </p>
+          <p className="text-[12px] text-ink-3">
+            經 {ORIGIN_LABEL[request.origin]} · {formatWhen(request.createdAt)}
+            {request.request.name ? ` · 建議名稱「${request.request.name}」` : ''}
+          </p>
+        </div>
+        <Button size="sm" variant="secondary" onClick={() => answer(request)} disabled={picking || decline.isPending}>
+          選擇資料夾…
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => decline.mutate(request.operationId)}
+          disabled={picking || decline.isPending}
+        >
+          拒絕
+        </Button>
+      </div>
+      {decline.isError && <ErrorNote error={decline.error} />}
+    </div>
+  );
+}
+
+const ATTENTION_KIND: Record<OperationStatus['kind'], string> = {
+  save: '保存版本',
+  restore: '回復版本',
+  'connect-request': '連接資料夾的請求',
+};
+
+// Operations that stopped part-way, in every project. Each project's page
+// says what is left and offers to finish or roll back.
+function AttentionCard({ navigate }: { navigate: Navigate }) {
+  const list = useOperationList();
+  const projects = useProjects();
+  const attention = list.data?.attention ?? [];
+  return (
+    <Card>
+      <CardHeader
+        title="需要恢復的操作"
+        description="操作在途中停止時會列在這裡。內容沒有遺失：開啟專案就能完成它，或還原成操作之前的內容。"
+        action={attention.length > 0 ? <Badge tone="warn">{attention.length} 個</Badge> : undefined}
+      />
+      <CardBody>
+        {list.isError ? (
+          <ErrorNote error={list.error} />
+        ) : list.isPending ? (
+          <p className="text-[13px] text-ink-3">讀取中…</p>
+        ) : attention.length === 0 ? (
+          <p className="text-[13px] text-ink-3">沒有需要恢復的操作。</p>
+        ) : (
+          <div className="flex flex-col divide-y divide-line rounded-md border border-line">
+            {attention.map((op) => {
+              const projectId = op.projectId;
+              const project = projects.data?.find((p) => p.projectId === projectId);
+              return (
+                <div key={op.operationId} className="flex items-center gap-3 px-4 py-3">
+                  <Alert className="size-4 shrink-0 text-warn" />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[13px] font-medium text-ink">
+                      {project?.name || '專案'} · {ATTENTION_KIND[op.kind]}
+                    </p>
+                    <p className="text-[12px] text-ink-3">
+                      經 {ORIGIN_LABEL[op.origin]} · {formatWhen(op.createdAt)}
+                    </p>
+                  </div>
+                  {projectId && (
+                    <Button size="sm" variant="secondary" onClick={() => navigate({ name: 'project', projectId })}>
+                      開啟專案
+                    </Button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
+export function SettingsScreen({ connection, navigate }: { connection: ConnectionState; navigate: Navigate }) {
   return (
     <div className="mx-auto flex max-w-[760px] flex-col gap-6 px-page pt-10 pb-24">
       <div>
         <h1 className="text-[22px] font-semibold tracking-tight">設定與診斷</h1>
-        <p className="mt-1 text-ink-2">agent 存取、引擎狀態與診斷資訊。</p>
+        <p className="mt-1 text-ink-2">agent 存取、待處理的請求、中斷的操作與引擎狀態。</p>
       </div>
       <AgentAccessCard />
+      <RequestsCard navigate={navigate} />
+      <AttentionCard navigate={navigate} />
       <EngineCard connection={connection} />
       <Card>
         <CardHeader
-          title="容量、診斷匯出與中斷恢復"
-          description="查看歷史與暫存用量、匯出去識別化的診斷資訊，以及處理中斷的操作。"
+          title="容量與診斷匯出"
+          description="查看歷史與暫存用量，以及匯出去識別化的診斷資訊。"
           action={<Badge tone="outline">尚未提供</Badge>}
         />
       </Card>

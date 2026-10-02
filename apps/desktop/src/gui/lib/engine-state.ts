@@ -1,6 +1,13 @@
-import { QueryClient, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  QueryClient,
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type Query,
+} from '@tanstack/react-query';
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import type { EngineEvent, ProjectId } from '@draft-tide/contracts';
+import type { EngineEvent, OperationId, PlanId, ProjectId, RecoveryStrategy } from '@draft-tide/contracts';
 import type { ConnectionState } from '../../shared/bridge.ts';
 import { bridge, engineCall } from './bridge.ts';
 
@@ -20,7 +27,23 @@ export const keys = {
   diff: (projectId: string, from: string, to: string) => ['snapshot.diff', projectId, from, to] as const,
   fileDiff: (projectId: string, from: string, to: string, path: string) =>
     ['snapshot.diffFile', projectId, from, to, path] as const,
+  operations: ['operation.list'] as const,
+  restorePlan: (projectId: string, target: string) => ['restore.plan', projectId, target] as const,
+  recovery: (projectId: string) => ['recovery.inspect', projectId] as const,
 };
+
+// Everything a change to a project can move: its folder state, history,
+// what needs recovery, and the app-wide operation list.
+function invalidateProject(client: QueryClient, projectId: string): void {
+  void client.invalidateQueries({ queryKey: keys.status(projectId) });
+  void client.invalidateQueries({ queryKey: keys.history(projectId) });
+  void client.invalidateQueries({ queryKey: keys.recovery(projectId) });
+  void client.invalidateQueries({ queryKey: keys.operations });
+}
+
+// A restore plan is never re-read behind the user's back: each read makes a
+// new plan, and the one on screen is the one confirmed.
+const rereadable = (query: Query) => query.queryKey[0] !== 'restore.plan';
 
 export function useEngineInfo() {
   return useQuery({ queryKey: keys.engineInfo, queryFn: () => engineCall('engine.info', {}) });
@@ -67,8 +90,23 @@ export function useBind() {
       entryFiles: string[];
       reviewToken: string;
       asNewProject?: boolean;
+      // The agent request this answers.
+      requestId?: OperationId;
     }) => engineCall('project.bind', input),
-    onSuccess: () => void client.invalidateQueries({ queryKey: keys.projects }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: keys.projects });
+      void client.invalidateQueries({ queryKey: keys.operations });
+    },
+  });
+}
+
+// Puts `.drafttide.json` back from the newest version, only while it is
+// missing from the folder.
+export function useRestoreSettings(projectId: ProjectId) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => engineCall('project.restoreSettings', { projectId }),
+    onSettled: () => invalidateProject(client, projectId),
   });
 }
 
@@ -126,9 +164,87 @@ export function useFileDiff(projectId: ProjectId, from: string, to: string, path
   });
 }
 
-// ---- Progress of running operations, per project, from Engine events.
+// ---- Restore and recovery (M1 plan §9.2–9.4). Nothing here is optimistic:
+// a restore shows as done only when the Engine's answer says so.
 
-type ProgressEvent = Extract<EngineEvent, { name: 'operation.progress' }>;
+// Read once per dialog: the plan is what the user confirms (see rereadable).
+export function useRestorePlan(projectId: ProjectId, target: string) {
+  return useQuery({
+    queryKey: keys.restorePlan(projectId, target),
+    queryFn: () => engineCall('restore.plan', { projectId, target }),
+    staleTime: Infinity,
+    gcTime: 0,
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useRestoreApply(projectId: ProjectId) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (planId: PlanId) => engineCall('restore.apply', { projectId, planId }),
+    onSettled: () => invalidateProject(client, projectId),
+  });
+}
+
+export function useRecoveryReport(projectId: ProjectId, enabled: boolean) {
+  return useQuery({
+    queryKey: keys.recovery(projectId),
+    queryFn: () => engineCall('recovery.inspect', { projectId }),
+    enabled,
+    staleTime: 1_000,
+  });
+}
+
+export function useRecoveryPlan(projectId: ProjectId) {
+  return useMutation({
+    mutationFn: (input: { operationId: OperationId; strategy: RecoveryStrategy }) =>
+      engineCall('recovery.plan', { projectId, ...input }),
+  });
+}
+
+export function useRecoveryApply(projectId: ProjectId) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (planId: PlanId) => engineCall('recovery.apply', { projectId, planId }),
+    onSettled: () => invalidateProject(client, projectId),
+  });
+}
+
+// Asks a running operation to stop at its next safe boundary. The answer may
+// be too-late: then it finishes, and its own result says how.
+export function useCancelOperation() {
+  return useMutation({
+    mutationFn: (operationId: OperationId) => engineCall('operation.cancel', { operationId }),
+  });
+}
+
+// ---- Agent requests, agent restores and operations needing recovery, in
+// every project (M1 plan §4.1, §9.1).
+
+export function useOperationList() {
+  return useQuery({ queryKey: keys.operations, queryFn: () => engineCall('operation.list', {}) });
+}
+
+export function useDeclineRequest() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (operationId: OperationId) => engineCall('request.decline', { operationId }),
+    onSettled: () => void client.invalidateQueries({ queryKey: keys.operations }),
+  });
+}
+
+export function useDismissNotice() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (operationId: OperationId) => engineCall('operation.dismiss', { operationId }),
+    onSettled: () => void client.invalidateQueries({ queryKey: keys.operations }),
+  });
+}
+
+// ---- Progress of running operations, per project, from Engine events: a
+// save's, a restore's or a recovery's.
+
+export type ProgressEvent = Extract<EngineEvent, { name: 'operation.progress' }>;
 const progress = new Map<string, ProgressEvent>();
 const progressListeners = new Set<() => void>();
 
@@ -163,15 +279,18 @@ export function useEngineConnection(): { state: ConnectionState; retry: () => vo
     void b.connectionState().then((s) => {
       if (alive && s) setState(s);
     });
+    // Missed events (a gap, a reconnect) may include an operation's end:
+    // progress is dropped and everything shown is re-read.
+    const rereadAll = () => {
+      for (const id of [...progress.keys()]) setProgress(id, null);
+      void client.invalidateQueries({ predicate: rereadable });
+    };
     const offConnection = b.onConnection((s) => {
       setState(s);
-      if (s.status === 'connected') void client.invalidateQueries();
+      if (s.status === 'connected') rereadAll();
     });
     const offEvent = b.onEvent(({ event, gap }) => {
-      if (gap) {
-        for (const id of [...progress.keys()]) setProgress(id, null);
-        return void client.invalidateQueries();
-      }
+      if (gap) return rereadAll();
       if (event.name === 'agentAccess.changed') {
         client.setQueryData(keys.agentAccess, event.agentAccess);
         void client.invalidateQueries({ queryKey: keys.engineInfo });
@@ -179,11 +298,20 @@ export function useEngineConnection(): { state: ConnectionState; retry: () => vo
         void client.invalidateQueries({ queryKey: keys.projects });
         void client.invalidateQueries({ queryKey: keys.status(event.projectId) });
         void client.invalidateQueries({ queryKey: keys.history(event.projectId) });
+        void client.invalidateQueries({ queryKey: keys.operations });
+        if (event.reason === 'restored' || event.reason === 'recovered') {
+          void client.invalidateQueries({ queryKey: keys.recovery(event.projectId) });
+        }
       } else if (event.name === 'operation.progress') {
         setProgress(event.projectId, event);
       } else if (event.name === 'operation.settled') {
         if (progress.get(event.projectId)?.operationId === event.operationId) setProgress(event.projectId, null);
         void client.invalidateQueries({ queryKey: keys.status(event.projectId) });
+        if (event.outcome === 'recovery-required') {
+          void client.invalidateQueries({ queryKey: keys.recovery(event.projectId) });
+        }
+      } else if (event.name === 'operations.changed') {
+        void client.invalidateQueries({ queryKey: keys.operations });
       }
     });
     return () => {

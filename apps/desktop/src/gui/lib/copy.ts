@@ -1,8 +1,11 @@
 import type {
+  Activity,
+  CollisionReason,
   ConfigInvalidReason,
   ErrorCode,
   FolderState,
   Origin,
+  RecoveryReason,
   RepoBlocker,
   RepoBusyReason,
   RepoUnsupportedReason,
@@ -49,8 +52,26 @@ export const ERROR_COPY: Partial<Record<ErrorCode, Copy>> = {
     next: '資料夾可能被移動、重新命名，或在未連接的磁碟上。版本歷史就在資料夾內的 .git 裡。',
   },
   RECOVERY_REQUIRED: {
-    title: '上一次的保存沒有完成最後一步',
-    next: '版本已經在歷史中。請勿手動刪除 .git/index.lock；完成恢復的功能會在後續版本提供。',
+    title: '上一次的操作沒有完成',
+    next: '內容沒有遺失。請在專案頁的「需要恢復」區塊完成或還原它，再繼續保存或回復。請勿手動刪除 .git/index.lock。',
+  },
+  PLAN_STALE: {
+    title: '檔案已改變，請重新檢查回復內容',
+    next: '檢查之後資料夾或歷史有變動，沒有改動任何檔案。按「重新檢查」看最新的內容，再確認一次。',
+  },
+  UNTRACKED_FILES: {
+    title: '有沒有保存在任何版本裡的檔案擋住了回復',
+    next: '沒有改動任何檔案。把它們移到資料夾以外，或加入保存範圍並保存版本，再重新檢查。',
+  },
+  CANCELLED: { title: '已取消', next: '操作在安全的步驟停下，沒有寫入任何設計檔案。' },
+  CONFIRMATION_REQUIRED: {
+    title: '這個操作需要你在 Draft Tide 視窗中完成',
+    next: '請在 Draft Tide 視窗中完成或拒絕這個請求。',
+  },
+  APPROVAL_DENIED: { title: '這個請求已被拒絕', next: '沒有做任何改動。' },
+  AGENT_ACCESS_DISABLED: {
+    title: 'agent 存取已關閉',
+    next: '到「設定與診斷」開啟 agent 存取之後，agent 才能操作專案。',
   },
   SCOPE_CHANGED: { title: '資料夾在檢查之後有變動', next: '請重新檢查保存範圍，再確認一次。' },
   PROJECT_ALREADY_BOUND: {
@@ -73,8 +94,50 @@ export function errorCopy(code: ErrorCode, details: Record<string, unknown>): Co
   if (code === 'CONFIG_INVALID' && reason === 'missing') {
     return {
       title: '專案設定檔（.drafttide.json）不見了',
-      next: '它是保存範圍的一部分。可以從其他複本或遠端取回；回復舊版的功能會在後續版本提供。',
+      next: '它定義了保存範圍，找回之前無法保存或回復。可以在專案頁從最新版本放回它。',
     };
+  }
+  if (code === 'INVALID_ARGUMENT' && reason === 'settings-present') {
+    return {
+      title: '資料夾裡已經有專案設定檔',
+      next: 'Draft Tide 不會覆寫它。按「重新檢查」看它現在的狀態。',
+    };
+  }
+  if (code === 'PLAN_STALE' && reason === 'used') {
+    return { title: '這個回復計畫已經用過了', next: '每個計畫只能套用一次。按「重新檢查」產生新的計畫。' };
+  }
+  if (code === 'PLAN_STALE' && reason === 'expired') {
+    return { title: '回復計畫已經過期', next: '計畫只保留 30 分鐘。按「重新檢查」看最新的內容，再確認一次。' };
+  }
+  if (code === 'PLAN_STALE' && reason === 'history-changed') {
+    return {
+      title: '檢查之後，版本歷史有了新的內容',
+      next: '有其他程式加入了新的版本，沒有改動任何檔案。按「重新檢查」後再確認一次。',
+    };
+  }
+  if (code === 'PLAN_STALE' && reason === 'external-change') {
+    return {
+      title: '回復寫入之前，有其他程式改了檔案',
+      next: '那個檔案保持原樣，沒有改動任何檔案。先停止會寫入資料夾的工具，再重新檢查。',
+    };
+  }
+  if (code === 'RECOVERY_REQUIRED' && reason === 'branch-changed') {
+    return {
+      title: '資料夾已經切換到其他 branch',
+      next: '在其他 Git 工具切換回原本的 branch 之後，再完成恢復。',
+    };
+  }
+  if (code === 'UNSUPPORTED_ENTRY' && reason === 'version-not-restorable') {
+    return {
+      title: '這個版本含有無法寫回資料夾的項目',
+      next: '例如捷徑或名稱衝突的檔案。這個版本仍在歷史中，可以比較，但無法回復。',
+    };
+  }
+  if (code === 'INVALID_ARGUMENT' && reason === 'nothing-to-recover') {
+    return { title: '這個操作已經不需要恢復', next: 'Draft Tide 已經處理好了。' };
+  }
+  if (code === 'INVALID_ARGUMENT' && reason === 'unknown-plan') {
+    return { title: '找不到這個計畫', next: '請重新檢查一次。' };
   }
   if (code === 'LOCAL_ROOT_UNAVAILABLE' && reason === 'repo-missing') {
     return {
@@ -188,7 +251,7 @@ export const FOLDER_STATE_COPY: Record<Exclude<FolderState, 'available'>, Copy> 
   },
   'config-missing': {
     title: '專案設定檔（.drafttide.json）不見了',
-    next: '它是保存範圍的一部分，找回之前無法保存。回復舊版的功能會在後續版本提供。',
+    next: '它定義了保存範圍，找回之前無法保存或回復。可以從最新版本放回它。',
   },
   'config-invalid': { title: '專案設定檔（.drafttide.json）無法使用', next: '修正這個檔案後就能繼續保存。' },
   'project-mismatch': {
@@ -215,3 +278,82 @@ export const SAVE_STAGE_LABEL: Record<string, string> = {
   write: '寫入版本歷史…',
   publish: '完成保存…',
 };
+
+export const RESTORE_STAGE_LABEL: Record<string, string> = {
+  check: '檢查資料夾…',
+  protect: '保存回復前的內容…',
+  apply: '寫入檔案…',
+  verify: '確認寫入的內容…',
+  publish: '記錄回復版本…',
+};
+
+// Recovery reports the restore's last three stages.
+export const RECOVERY_STAGE_LABEL: Record<string, string> = {
+  apply: '寫入檔案…',
+  verify: '確認寫入的內容…',
+  publish: '記錄回復版本…',
+};
+
+// ---- Restore and recovery (M1 plan §9.2–9.4)
+
+// Why an item is in the way of a restore: it isn't in any version, so
+// writing over it would lose it.
+export const COLLISION_COPY: Record<CollisionReason, string> = {
+  'unsaved-file': '不在保存範圍內的檔案（被 .gitignore 或排除規則略過）',
+  folder: '資料夾，裡面有沒保存的檔案；這個版本在這裡是一個檔案',
+  link: '捷徑或特殊檔案，Draft Tide 不會寫入它',
+  parent: '上層資料夾是上面其中一種項目',
+};
+
+export const KEPT_SETTINGS_COPY: Record<'missing' | 'invalid' | 'other-project', string> = {
+  missing: '這個版本沒有專案設定檔（.drafttide.json）',
+  invalid: '這個版本的專案設定檔（.drafttide.json）無法使用',
+  'other-project': '這個版本的專案設定檔（.drafttide.json）屬於另一個專案',
+};
+
+export const RECOVERY_REASON_COPY: Record<RecoveryReason, Copy> = {
+  interrupted: {
+    title: 'Draft Tide 在操作途中停止了',
+    next: '例如電腦關機或程式被結束。內容沒有遺失。',
+  },
+  'external-change': {
+    title: '回復寫入期間，有其他程式改了檔案',
+    next: '被改過的檔案會保持原樣。先停止會寫入資料夾的工具，再選擇要完成或還原。',
+  },
+  'history-changed': {
+    title: '記錄回復版本之前，有其他程式在歷史中加入了新的內容',
+    next: '什麼都沒有被覆蓋。完成回復會把回復版本接在新的內容之後。',
+  },
+  'not-recorded': {
+    title: '檔案已經寫入，但回復版本沒有記錄下來',
+    next: '完成回復會把回復版本記錄到歷史中。',
+  },
+  'verify-failed': {
+    title: '寫入之後讀回的內容和預期不同',
+    next: '可能有程式同時在寫入。先停止它，再選擇要完成或還原。',
+  },
+  'write-failed': {
+    title: '有檔案無法寫入',
+    next: '例如磁碟已滿或沒有權限。處理之後，再選擇要完成或還原。',
+  },
+  'index-switch': {
+    title: '版本已經在歷史中，但最後一步沒有完成',
+    next: '版本沒有遺失；只差把 Git 的索引切換到這個版本。',
+  },
+  'unknown-lock': {
+    title: '.git 裡有 Draft Tide 留下的鎖，但找不到對應的操作紀錄',
+    next: '它可能來自較早的 Draft Tide 或另一台電腦。確認沒有其他 Draft Tide 正在使用這個資料夾後，可以移除它。',
+  },
+};
+
+export const ACTIVITY_LABEL: Record<Activity, { self: string; agent: string }> = {
+  saving: { self: '保存中…', agent: '正在保存…' },
+  restoring: { self: '回復中…', agent: '正在回復…' },
+  recovering: { self: '恢復中…', agent: '正在恢復…' },
+};
+
+// "回復中…" from this window, "CLI 正在回復…" from an agent.
+export function activityText(activity: Activity, origin: Origin): string {
+  const label = ACTIVITY_LABEL[activity];
+  return origin === 'gui' ? label.self : `${ORIGIN_LABEL[origin]} ${label.agent}`;
+}

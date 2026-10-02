@@ -1,22 +1,31 @@
 import { useState, type ReactNode } from 'react';
-import { DtError, type ErrorInfo, type FolderReview, type ProjectId, type RepoBlocker } from '@draft-tide/contracts';
-import { Alert, Check, ChevronLeft, FileIcon, Folder, Info } from '../components/icons.tsx';
-import { SaveProgressLine } from '../components/progress.tsx';
+import {
+  DtError,
+  type ErrorInfo,
+  type FolderReview,
+  type OperationId,
+  type ProjectId,
+  type RepoBlocker,
+} from '@draft-tide/contracts';
+import { Agent, Alert, Check, ChevronLeft, FileIcon, Folder, Info } from '../components/icons.tsx';
+import { isConnectRequest, type ConnectRequest } from '../components/operation-banners.tsx';
+import { ProgressLine } from '../components/progress.tsx';
 import { Badge } from '../components/ui/badge.tsx';
 import { Button } from '../components/ui/button.tsx';
 import { Card } from '../components/ui/card.tsx';
 import { Details } from '../components/ui/details.tsx';
 import { engineCall } from '../lib/bridge.ts';
 import { cn } from '../lib/cn.ts';
-import { CONFIG_REASON_COPY, ENTRY_KIND_COPY, WARNING_COPY, blockerCopy } from '../lib/copy.ts';
-import { useBind, useOperationProgress, useReview } from '../lib/engine-state.ts';
+import { CONFIG_REASON_COPY, ENTRY_KIND_COPY, ORIGIN_LABEL, WARNING_COPY, blockerCopy } from '../lib/copy.ts';
+import { useBind, useOperationList, useOperationProgress, useReview } from '../lib/engine-state.ts';
 import { formatBytes } from '../lib/format.ts';
 import type { Navigate } from '../lib/route.ts';
 import { ErrorNote } from './error-note.tsx';
 
 // 範圍審查 (M1 plan §4.1, §6.2): what connecting this folder means, before
 // anything is written. Confirming connects it (git init if needed, then
-// .drafttide.json) and saves the first version.
+// .drafttide.json) and saves the first version. Reached from an agent's
+// request (requestId), connecting also answers that request (M1 plan §9.1).
 
 const inputClass =
   'h-9 w-full rounded-md border border-line-strong bg-surface px-3 text-sm focus:border-tide-500 focus:outline-none focus-visible:outline-2';
@@ -81,8 +90,54 @@ function BlockerItem({ blocker }: { blocker: RepoBlocker }) {
   );
 }
 
-export function ReviewScreen({ root, navigate }: { root: string; navigate: Navigate }) {
+// What the agent asked for. Its name and preview entry are only suggestions,
+// filled in for the user to change.
+function RequestNote({ root, request }: { root: string; request: ConnectRequest | null }) {
+  return (
+    <p className="flex items-start gap-2 rounded-md bg-agent-soft px-3 py-2 text-[13px] text-ink-2" role="note">
+      <Agent className="mt-0.5 size-4 shrink-0 text-agent" />
+      <span>
+        {request ? (
+          <>
+            Agent 經 {ORIGIN_LABEL[request.origin]} 請求連接資料夾
+            {request.request.root !== root && (
+              <>
+                {' '}
+                <code className="font-mono text-[12px]">{request.request.root}</code>
+                ，你選的是另一個資料夾
+              </>
+            )}
+            。確認並連接之後，就會回覆這個請求；不想連接，可以返回並拒絕它。
+          </>
+        ) : (
+          <>這個 agent 請求已經不在等待中（已經回覆，或被撤回）。仍然可以連接這個資料夾。</>
+        )}
+      </span>
+    </p>
+  );
+}
+
+export function ReviewScreen({
+  root,
+  requestId,
+  navigate,
+}: {
+  root: string;
+  requestId?: OperationId;
+  navigate: Navigate;
+}) {
   const review = useReview(root);
+  const operations = useOperationList();
+  // The request as it was when this screen opened: connecting answers it, and
+  // the note shouldn't change under the user while that happens. Its
+  // suggestions fill the form, so the form waits for the list (or its failure).
+  const [opened, setOpened] = useState<{ request: ConnectRequest | null } | null>(null);
+  if (requestId !== undefined && opened === null && !operations.isPending) {
+    const found = operations.data?.requests.filter(isConnectRequest).find((r) => r.operationId === requestId);
+    setOpened({ request: found ?? null });
+  }
+  const request = opened?.request ?? null;
+  const waitingForRequest = requestId !== undefined && opened === null;
 
   return (
     <div className="mx-auto flex max-w-[1160px] flex-col gap-6 px-page pt-6 pb-24">
@@ -98,7 +153,8 @@ export function ReviewScreen({ root, navigate }: { root: string; navigate: Navig
           </p>
         </div>
       </div>
-      {review.isPending ? (
+      {requestId !== undefined && opened !== null && <RequestNote root={root} request={request} />}
+      {review.isPending || waitingForRequest ? (
         <Card className="px-5 py-10 text-center text-ink-3" role="status">
           正在檢查資料夾…
         </Card>
@@ -118,6 +174,8 @@ export function ReviewScreen({ root, navigate }: { root: string; navigate: Navig
           navigate={navigate}
           recheck={() => void review.refetch()}
           rechecking={review.isFetching}
+          request={request}
+          {...(requestId !== undefined ? { requestId } : {})}
         />
       )}
     </div>
@@ -129,17 +187,23 @@ function ReviewBody({
   navigate,
   recheck,
   rechecking,
+  request,
+  requestId,
 }: {
   review: FolderReview;
   navigate: Navigate;
   recheck: () => void;
   rechecking: boolean;
+  request: ConnectRequest | null;
+  requestId?: OperationId;
 }) {
   const bind = useBind();
-  const [name, setName] = useState(review.suggestedName);
-  const [entry, setEntry] = useState<string>(
-    review.entryFiles.find((e) => e.status === 'included')?.path ?? review.entryCandidates[0] ?? '',
+  const [name, setName] = useState(request?.request.name || review.suggestedName);
+  const included = review.entryFiles.filter((e) => e.status === 'included').map((e) => e.path);
+  const suggestedEntry = request?.request.entryFiles.find(
+    (f) => included.includes(f) || review.entryCandidates.includes(f),
   );
+  const [entry, setEntry] = useState<string>(suggestedEntry ?? included[0] ?? review.entryCandidates[0] ?? '');
   const [asNewProject, setAsNewProject] = useState(false);
   const [phase, setPhase] = useState<'idle' | 'connecting' | 'saving'>('idle');
   const [projectId, setProjectId] = useState<ProjectId | null>(null);
@@ -154,12 +218,7 @@ function ReviewBody({
   if (config.status === 'invalid') problems.push('專案設定檔（.drafttide.json）無法使用。');
   if (conflict) problems.push('這個資料夾的專案已經連接在其他位置。');
   const canConfirm = problems.length === 0 && phase === 'idle' && binding.status !== 'bound-here' && !rechecking;
-  const entryChoices = [
-    ...new Set([
-      ...review.entryFiles.filter((e) => e.status === 'included').map((e) => e.path),
-      ...review.entryCandidates,
-    ]),
-  ];
+  const entryChoices = [...new Set([...included, ...review.entryCandidates])];
 
   const confirm = async () => {
     setError(null);
@@ -172,6 +231,7 @@ function ReviewBody({
         entryFiles: entry ? [entry] : [],
         reviewToken: review.reviewToken,
         ...(asNewProject ? { asNewProject: true } : {}),
+        ...(requestId !== undefined ? { requestId } : {}),
       });
       connected = r.project.projectId;
     } catch (e) {
@@ -445,7 +505,7 @@ function ReviewBody({
             </ul>
           )}
           {phase === 'saving' ? (
-            <SaveProgressLine event={progress} fallback="保存第一版…" />
+            <ProgressLine event={progress} fallback="保存第一版…" />
           ) : (
             <Button variant="primary" size="lg" disabled={!canConfirm} onClick={() => void confirm()}>
               {phase === 'connecting' ? (

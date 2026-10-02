@@ -1,4 +1,4 @@
-import type { HistoryEntry } from '@draft-tide/contracts';
+import type { CommitRef, HistoryEntry } from '@draft-tide/contracts';
 import { KIND_LABEL } from './copy.ts';
 
 // Display formatting. Machine timestamps stay UTC ISO strings everywhere else.
@@ -43,4 +43,12 @@ export function entryTitle(e: HistoryEntry): string {
 
 export function entryTime(e: HistoryEntry): string | null {
   return e.snapshot?.createdAt ?? e.committedAt;
+}
+
+// A version an operation names by commit: "V3" when the loaded history shows
+// it, else a short id (it may be older than the pages read so far).
+export function refLabel(entries: readonly HistoryEntry[], ref: CommitRef): string {
+  const e = entries.find((x) => x.commit === ref.commit);
+  if (e) return versionLabel(e) ?? '外部變更';
+  return `版本 ${shortId(ref.snapshotId ?? ref.commit)}`;
 }
