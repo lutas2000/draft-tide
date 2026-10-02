@@ -5,3 +5,4 @@ export * from './root.ts';
 export * from './space.ts';
 export * from './staging.ts';
 export * from './workspace.ts';
+export * from './writeback.ts';

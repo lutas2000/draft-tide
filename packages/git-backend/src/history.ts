@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { lstat, open, rename, rm, unlink, type FileHandle } from 'node:fs/promises';
+import { lstat, open, readdir, rename, rm, unlink, type FileHandle } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import {
   CommitIdentity,
@@ -36,6 +36,7 @@ import { HARDENING, type GitRuntime } from './runtime.ts';
 export const ZERO_OID = '0'.repeat(40);
 const OID = /^[0-9a-f]{40}$/;
 const LOCK_MARKER = /^draft-tide ([0-9a-f-]{36})\n$/;
+const PREPARED_INDEX = /^index\.dt-([0-9a-f-]{36})$/;
 const DEFAULT_LOCK_WAIT_MS = 2000;
 const LOCK_POLL_MS = 25;
 // Commit objects are kept up to this size (headers and message); the rest of
@@ -434,17 +435,44 @@ export function createHistory(args: {
         await discardPreparedIndex(operationId);
         throw e;
       }
+      // The index belongs to the branch HEAD is on. Switching branches needs
+      // this lock, so HEAD read now can't change before the index goes in; if
+      // it already moved to another branch (a `git switch` during the save),
+      // this version's index must not go in.
+      try {
+        const head = await run(['symbolic-ref', '--quiet', 'HEAD'], { okExitCodes: [1] });
+        if (head.stdout.toString('utf8').trim() !== ref) {
+          throw new DtError(
+            'HISTORY_CHANGED',
+            'the folder was switched to another branch meanwhile; nothing was changed',
+            { reason: 'branch-changed' },
+          );
+        }
+      } catch (e) {
+        await releaseIndexLock(operationId);
+        await discardPreparedIndex(operationId);
+        throw e;
+      }
       // 2. Compare-and-swap. Lost: someone committed meanwhile; nothing was
       // overwritten, and a new save builds on their commit.
       try {
         await run(['update-ref', '-m', reflogMessage, ref, commit, expectedOld ?? ZERO_OID]);
       } catch (e) {
         const now = await readBranchTip(run, ref).catch(() => undefined);
+        // Not knowing where the ref is now is not evidence that it didn't
+        // move: the lock stays, and recovery decides from the branch tip.
+        if (now === undefined) {
+          throw new DtError(
+            'RECOVERY_REQUIRED',
+            "the branch couldn't be read after updating it; this is checked again before the next change",
+            { operationId, commit },
+          );
+        }
         // Git reported a failure after moving the ref: the version is in
         // history, and releasing the lock now would leave a stale index.
         if (now !== commit) {
           const failure = await refUpdateFailure(e, ref, expectedOld, now);
-          await unlink(lockPath).catch(() => undefined);
+          await releaseIndexLock(operationId);
           await discardPreparedIndex(operationId);
           throw failure;
         }
@@ -455,7 +483,7 @@ export function createHistory(args: {
       try {
         await hooks?.afterRefUpdate?.(operationId);
         await renameOver(index, indexPath);
-        await unlink(lockPath);
+        await releaseIndexLock(operationId);
       } catch (e) {
         const details: Record<string, JsonValue> = { operationId, commit };
         const code = errnoOf(e);
@@ -489,6 +517,21 @@ export function createHistory(args: {
 
     indexLock: readIndexLock,
     releaseIndexLock,
+
+    async preparedIndexes() {
+      let names: string[];
+      try {
+        names = await readdir(gitDir);
+      } catch (e) {
+        throw fsError(e, 'listing the repository');
+      }
+      const ids: OperationId[] = [];
+      for (const name of names) {
+        const id = OperationId.safeParse(PREPARED_INDEX.exec(name)?.[1]);
+        if (id.success) ids.push(id.data);
+      }
+      return ids;
+    },
 
     readRef(ref, signal) {
       return readBranchTip(run, ref, signal);

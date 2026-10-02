@@ -63,6 +63,7 @@ function refusingHistory(): GitHistory {
     finishPublish: refuse,
     indexLock: refuse,
     releaseIndexLock: refuse,
+    preparedIndexes: refuse,
     readRef: refuse,
     readCommits: refuse,
     firstParentLine: refuse,
