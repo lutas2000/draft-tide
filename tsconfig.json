@@ -7,5 +7,5 @@
     "allowJs": true,
     "checkJs": false
   },
-  "include": ["eslint.config.js", "vitest.config.ts"]
+  "include": ["eslint.config.js", "vitest.config.ts", "fixtures"]
 }

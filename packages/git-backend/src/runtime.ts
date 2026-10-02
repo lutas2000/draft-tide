@@ -1,5 +1,6 @@
-import { accessSync, constants, statSync } from 'node:fs';
-import { delimiter, dirname, isAbsolute, join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { accessSync, constants, existsSync, statSync } from 'node:fs';
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 
 // Which Git runs, and the environment it runs in. Release builds use the
 // bundled full Git (M1-09) and never consult PATH; development and tests use
@@ -38,6 +39,28 @@ export function findGitOnPath(env: NodeJS.ProcessEnv = process.env): string | nu
     }
   }
   return null;
+}
+
+// GIT_EXEC_PATH for a Git that can't find its own helpers. A system Git
+// knows where git-remote-https is (null: leave it be); dugite's build doesn't
+// derive its exec path (`--exec-path` says `//libexec/git-core`), so for a
+// Git laid out as <prefix>/bin/git with <prefix>/libexec/git-core next to it,
+// that directory. Network operations need git-remote-https (M1-07).
+export function detectExecPath(gitPath: string): string | null {
+  const helper = process.platform === 'win32' ? 'git-remote-https.exe' : 'git-remote-https';
+  try {
+    const reported = execFileSync(gitPath, ['--exec-path'], {
+      encoding: 'utf8',
+      env: { PATH: dirname(gitPath), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' },
+      timeout: 10_000,
+      windowsHide: true,
+    }).trim();
+    if (reported && existsSync(join(reported, helper))) return null;
+  } catch {
+    // Fall through to the layout next to the executable.
+  }
+  const beside = resolve(dirname(gitPath), '..', 'libexec', 'git-core');
+  return existsSync(join(beside, helper)) ? beside : null;
 }
 
 // On every local invocation. Command-line settings outrank the repo's own

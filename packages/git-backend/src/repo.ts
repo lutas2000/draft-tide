@@ -6,13 +6,23 @@ import type {
   GitHistory,
   GitListing,
   GitOid,
+  GitRemote,
   GitRepo,
   IndexEntry,
   PathAttributes,
   ProjectGit,
+  PushObject,
   RepoProbe,
 } from '@draft-tide/core';
 import { createHistory, type HistoryTestHooks } from './history.ts';
+import {
+  TRACKING_PREFIX,
+  fetchRemoteBranch,
+  isSafeBranchName,
+  listRemoteHeads,
+  pushRemoteBranch,
+  withNetwork,
+} from './network.ts';
 import { probeRepo } from './probe.ts';
 import { runGit, streamGit, type GitOutput, type RunOptions } from './process.ts';
 import { HARDENING, type GitRuntime } from './runtime.ts';
@@ -44,6 +54,9 @@ export interface OpenGitRepoOptions {
   scratchGitDir?: string;
   // Tests only: pause or fail at a point inside publishing.
   testHooks?: HistoryTestHooks;
+  // Where network operations make their ephemeral git dirs (the data
+  // directory's tmp/). Without it the repo has no network operations.
+  networkTmpDir?: string;
 }
 
 // History operations of a repo opened on a scratch git dir: refused, so
@@ -73,6 +86,35 @@ function refusingHistory(): GitHistory {
     isAncestor: refuse,
   };
   return all;
+}
+
+function refusingRemote(why: string): GitRemote {
+  const refuse = (): never => {
+    throw new DtError('INTERNAL_ERROR', why);
+  };
+  const all: Record<keyof GitRemote, () => never> = {
+    remoteHeads: refuse,
+    fetchBranch: refuse,
+    pushBranch: refuse,
+    trackingTip: refuse,
+    clearTracking: refuse,
+    objectsToPush: refuse,
+    commitsBetween: refuse,
+    mergeBase: refuse,
+    readOrigin: refuse,
+    setOrigin: refuse,
+  };
+  return all;
+}
+
+function assertOids(oids: readonly string[]): void {
+  if (!oids.every((o) => OID_PATTERN.test(o))) throw new DtError('INTERNAL_ERROR', 'invalid object id');
+}
+
+function trackingRef(branch: string): string {
+  if (!isSafeBranchName(branch))
+    throw new DtError('INVALID_ARGUMENT', 'unsupported branch name', { reason: 'branch-name' });
+  return `${TRACKING_PREFIX}${branch}`;
 }
 
 // One design repo: explicit --git-dir and --work-tree (no discovery), the
@@ -234,7 +276,186 @@ export function openGitRepo(rt: GitRuntime, root: string, options: OpenGitRepoOp
       return found;
     },
   };
-  return { ...scope, ...history };
+  const remote: GitRemote =
+    options.scratchGitDir !== undefined
+      ? refusingRemote('a scratch git dir only lists the folder')
+      : options.networkTmpDir === undefined
+        ? refusingRemote('this repo was opened without network operations')
+        : createRemote(rt, root, gitDir, options.networkTmpDir, run);
+  return { ...scope, ...history, ...remote };
+}
+
+// The network half of a design repo (network.ts) and the reads that go with
+// it. Only objects and refs/remotes/draft-tide/* are written into the
+// project's `.git`; `remote.origin.*` only through setOrigin.
+function createRemote(
+  rt: GitRuntime,
+  root: string,
+  gitDir: string,
+  tmpDir: string,
+  run: (args: string[], opts?: RunOptions) => Promise<GitOutput>,
+): GitRemote {
+  const objectsDir = join(gitDir, 'objects');
+  const configFile = join(gitDir, 'config');
+
+  async function setTracking(branch: string, oid: GitOid): Promise<void> {
+    await run(['update-ref', '-m', 'draft-tide: remote', trackingRef(branch), oid]);
+  }
+
+  // rev-list over the commits reachable from tip and not from exclude, read
+  // from stdin so nothing is parsed as an option or a revision expression.
+  function revListInput(tip: GitOid, exclude: readonly GitOid[]): string {
+    assertOids([tip, ...exclude]);
+    return [tip, ...exclude.map((e) => `^${e}`)].join('\n') + '\n';
+  }
+
+  return {
+    remoteHeads: (access, signal) =>
+      withNetwork(rt, tmpDir, null, access, (net) => listRemoteHeads(net, access.url, signal)),
+
+    async fetchBranch(access, branch, options = {}) {
+      const known = await this.trackingTip(branch);
+      const haves = [...new Set([...(options.haves ?? []), ...(known ? [known] : [])])];
+      const tip = await withNetwork(rt, tmpDir, objectsDir, access, (net) =>
+        fetchRemoteBranch(net, access.url, branch, haves, options.signal),
+      );
+      // What was there before is gone (deleted on GitHub, or another
+      // repository): the tracking ref must not keep claiming it.
+      if (tip !== null) await setTracking(branch, tip);
+      else if (known !== null) await this.clearTracking(branch);
+      return tip;
+    },
+
+    async pushBranch(access, branch, commit, signal) {
+      const r = await withNetwork(rt, tmpDir, objectsDir, access, (net) =>
+        pushRemoteBranch(net, access.url, branch, commit, signal),
+      );
+      await setTracking(branch, commit);
+      return { created: r.created };
+    },
+
+    async trackingTip(branch) {
+      const ref = trackingRef(branch);
+      const out = await run(['for-each-ref', '--format=%(refname)%00%(objectname)%00%(objecttype)', ref]);
+      for (const line of out.stdout.toString('utf8').split('\n')) {
+        const [name, oid, type] = line.split('\0');
+        if (name === ref && type === 'commit' && oid && OID_PATTERN.test(oid)) return oid;
+      }
+      return null;
+    },
+
+    async clearTracking(branch) {
+      await run(['update-ref', '-m', 'draft-tide: remote', '-d', trackingRef(branch)]);
+    },
+
+    async objectsToPush(tip, exclude, signal) {
+      let found: { oid: GitOid; path: string | null }[] = [];
+      const input = revListInput(tip, exclude);
+      try {
+        // `-z` (Git 2.50+, the bundled Git has it): "<oid> NUL [path=<path> NUL]",
+        // every path as it is.
+        await run(['rev-list', '-z', '--objects', '--stdin'], {
+          input,
+          signal,
+          onRecord: (rec) => {
+            if (rec.length === 0) return;
+            const text = rec.toString('utf8');
+            if (text.startsWith('path=')) {
+              const last = found.at(-1);
+              if (last) last.path = text.slice('path='.length);
+              return;
+            }
+            if (!OID_PATTERN.test(text)) throw new DtError('GIT_FAILED', 'unexpected rev-list output');
+            found.push({ oid: text, path: null });
+          },
+        });
+      } catch (e) {
+        // An older development Git: "<oid> <path>" lines. Git cuts a path at a
+        // line break there; the review only shows paths, so that is enough.
+        if (!(e instanceof DtError) || e.code !== 'GIT_FAILED' || e.details['subcommand'] !== 'rev-list') throw e;
+        found = [];
+        await run(['rev-list', '--objects', '--stdin'], {
+          input,
+          signal,
+          recordSeparator: 10,
+          onRecord: (rec) => {
+            const line = rec.toString('utf8');
+            if (line === '') return;
+            const oid = line.slice(0, 40);
+            if (!OID_PATTERN.test(oid)) throw new DtError('GIT_FAILED', 'unexpected rev-list output');
+            found.push({ oid, path: line.length > 41 ? line.slice(41) : null });
+          },
+        });
+      }
+      if (found.length === 0) return [];
+      const r = await run(['cat-file', '--batch-check=%(objectname) %(objecttype) %(objectsize)'], {
+        input: `${found.map((f) => f.oid).join('\n')}\n`,
+        maxOutputBytes: found.length * 80 + 1024,
+        timeoutMs: null,
+        signal,
+      });
+      const lines = r.stdout.toString('utf8').split('\n');
+      return found.map((f, i): PushObject => {
+        const [oid, type, size] = (lines[i] ?? '').split(' ');
+        if (oid !== f.oid || (type !== 'commit' && type !== 'tree' && type !== 'blob' && type !== 'tag')) {
+          throw new DtError('GIT_FAILED', 'unexpected cat-file output');
+        }
+        return { oid: f.oid, type, path: f.path, size: Number(size) };
+      });
+    },
+
+    async commitsBetween(tip, exclude, signal) {
+      const out = await run(['rev-list', '--stdin'], {
+        input: revListInput(tip, exclude),
+        timeoutMs: null,
+        maxOutputBytes: 64 * 1024 * 1024,
+        signal,
+      });
+      return out.stdout
+        .toString('utf8')
+        .split('\n')
+        .filter((l) => OID_PATTERN.test(l));
+    },
+
+    async mergeBase(a, b, signal) {
+      assertOids([a, b]);
+      const out = await run(['merge-base', '--end-of-options', a, b], { okExitCodes: [1], timeoutMs: null, signal });
+      const oid = out.stdout.toString('utf8').trim();
+      return out.exitCode === 0 && OID_PATTERN.test(oid) ? oid : null;
+    },
+
+    async readOrigin() {
+      const out = await runGit(
+        rt,
+        [...HARDENING, 'config', '--file', configFile, '--no-includes', '--get', 'remote.origin.url'],
+        root,
+        { okExitCodes: [1] },
+      );
+      if (out.exitCode !== 0) return null;
+      const url = out.stdout.toString('utf8').replace(/\n$/, '');
+      return url === '' ? null : url;
+    },
+
+    async setOrigin(url) {
+      const parsed = URL.canParse(url) ? new URL(url) : null;
+      const loopback = parsed?.hostname === '127.0.0.1' || parsed?.hostname === 'localhost';
+      if (
+        /[\n\r\0]/.test(url) ||
+        !parsed ||
+        !(parsed.protocol === 'https:' || (parsed.protocol === 'http:' && loopback)) ||
+        parsed.username !== '' ||
+        parsed.password !== ''
+      ) {
+        throw new DtError('INTERNAL_ERROR', 'invalid origin');
+      }
+      for (const [key, value] of [
+        ['remote.origin.url', url],
+        ['remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*'],
+      ] as const) {
+        await runGit(rt, [...HARDENING, 'config', '--file', configFile, '--replace-all', key, value], root);
+      }
+    },
+  };
 }
 
 // An empty git dir for listing a folder that has no `.git` yet. The caller

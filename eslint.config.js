@@ -18,7 +18,12 @@ const restrict = (paths, patterns = []) => ({
 
 const NODE_BUILTINS = { group: ['node:*'], message: 'Must stay runnable in the browser GUI.' };
 const DRIVERS_AND_UI = ['electron', 'react', 'react-dom', 'better-sqlite3', '@modelcontextprotocol/sdk'];
-const ADAPTERS = ['@draft-tide/local-store', '@draft-tide/git-backend', '@draft-tide/adapter-filesystem'];
+const ADAPTERS = [
+  '@draft-tide/local-store',
+  '@draft-tide/git-backend',
+  '@draft-tide/adapter-filesystem',
+  '@draft-tide/remote-github',
+];
 const WRITERS = ['@draft-tide/core', ...ADAPTERS, 'better-sqlite3'];
 
 export default tseslint.config(
@@ -90,6 +95,22 @@ export default tseslint.config(
       '@draft-tide/git-backend',
       '@draft-tide/engine-client',
       'node:child_process',
+      'node:net',
+    ]),
+  },
+  {
+    // GitHub's API and the token (through its vault port); never Git, files,
+    // SQLite or a process.
+    files: ['packages/remote-github/src/**'],
+    rules: restrict([
+      ...DRIVERS_AND_UI,
+      '@draft-tide/local-store',
+      '@draft-tide/git-backend',
+      '@draft-tide/adapter-filesystem',
+      '@draft-tide/engine-client',
+      'node:child_process',
+      'node:fs',
+      'node:fs/promises',
       'node:net',
     ]),
   },

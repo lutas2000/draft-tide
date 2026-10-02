@@ -281,8 +281,10 @@ export function createHistory(args: {
   }
 
   return {
-    async init(signal) {
+    async init(signal, options) {
       if (await exists(join(root, '.git'))) throw new DtError('INTERNAL_ERROR', 'the folder already has a .git');
+      const branch = options?.branch ?? 'main';
+      if (!isBranchRef(`refs/heads/${branch}`)) throw new DtError('INTERNAL_ERROR', 'invalid branch name');
       // Explicit formats: Git 3 changes the defaults to ones Draft Tide refuses
       // (sha256, reftable). No template: no hooks, no sample files.
       await runGit(
@@ -292,7 +294,7 @@ export function createHistory(args: {
           'init',
           '--quiet',
           '--template=',
-          '--initial-branch=main',
+          `--initial-branch=${branch}`,
           '--object-format=sha1',
           '--ref-format=files',
           '--',
