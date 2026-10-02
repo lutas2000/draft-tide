@@ -99,7 +99,11 @@ class HostProcess {
     this.#log = log;
     this.#scratch = mkdtempSync(join(tmpdir(), 'dt-preview-'));
     this.#child = spawn(launch.command, [...launch.args, PREVIEW_HOST_FLAG], {
-      stdio: ['ignore', 'ignore', 'pipe', 'pipe'],
+      // On Windows an extra pipe reaches the child as a synchronous handle,
+      // and Windows serializes synchronous I/O on one handle: the host's
+      // pending read would block its first write (`ready`) for good. An
+      // overlapped handle lets both run.
+      stdio: ['ignore', 'ignore', 'pipe', process.platform === 'win32' ? 'overlapped' : 'pipe'],
       env: hostEnvironment(this.#scratch, timezone),
       windowsHide: true,
     });
