@@ -5,10 +5,24 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
-import { DtError, OperationId, PlanId, ProjectId, type OperationJournal } from '@draft-tide/contracts';
-import type { OperationRecord, StoredPlan } from '@draft-tide/core';
+import {
+  DtError,
+  OperationId,
+  PlanId,
+  ProjectId,
+  type OperationJournal,
+  type PreviewRecord,
+} from '@draft-tide/contracts';
+import type { OperationRecord, StoredPlan, StoredPreview } from '@draft-tide/core';
 import { afterEach, describe, expect, it } from 'vitest';
-import { MIGRATIONS, STATE_DB_FILE, openLocalStore, tryAcquireEngineLock, type Migration } from '../src/index.ts';
+import {
+  LATEST_SCHEMA_VERSION,
+  MIGRATIONS,
+  STATE_DB_FILE,
+  openLocalStore,
+  tryAcquireEngineLock,
+  type Migration,
+} from '../src/index.ts';
 
 const dirs: string[] = [];
 function tempDir(): string {
@@ -335,11 +349,101 @@ describe('the operation journal', () => {
     v1.setAgentAccess(true, now());
     v1.close();
     const v2 = await openLocalStore({ dataDir });
-    expect(v2.storageSchemaVersion).toBe(2);
+    expect(v2.storageSchemaVersion).toBe(LATEST_SCHEMA_VERSION);
     expect(v2.getAgentAccess().enabled).toBe(true);
     expect(v2.listOperations({})).toEqual([]);
+    expect(v2.listPreviews()).toEqual([]);
     v2.close();
     expect(readdirSync(dataDir).filter((f) => f.startsWith(`${STATE_DB_FILE}.backup-v1-`))).toHaveLength(1);
+  });
+});
+
+describe('the preview cache', () => {
+  const projectId = ProjectId.parse(randomUUID());
+  const image = (bytes: number) => ({ width: 1280, height: 800, bytes, sha256: 'a'.repeat(64) });
+  const record: PreviewRecord = {
+    subject: { kind: 'page', path: 'index.html' },
+    image: image(1000),
+    thumbnail: { ...image(100), width: 400, height: 250 },
+    renderedAt: '2026-10-02T00:00:00.000Z',
+    missing: { count: 1, entries: [{ path: 'logo.png', reason: 'not-in-version' }] },
+    blocked: { count: 0, entries: [] },
+    settings: {
+      viewport: { width: 1280, height: 800, scale: 1 },
+      thumbnail: { width: 400, height: 250 },
+      locale: 'en-US',
+      timezone: 'Asia/Taipei',
+      scripts: true,
+      wait: 'load+fonts+2-frames+300ms',
+      animations: 'jump-to-end',
+    },
+    environment: {
+      renderer: 'electron/1 chromium/2',
+      electron: '1',
+      chromium: '2',
+      platform: 'darwin',
+      osRelease: '27.0.0',
+    },
+  };
+  const entry = (key: string, usedAt: string): StoredPreview => ({
+    projectId,
+    key: key.repeat(64),
+    createdAt: usedAt,
+    usedAt,
+    bytes: 1100,
+    record,
+  });
+
+  it('keeps previews across reopen, least recently used first', async () => {
+    const dataDir = tempDir();
+    const store = await openLocalStore({ dataDir });
+    store.putPreview(entry('a', '2026-10-02T00:00:01.000Z'));
+    store.putPreview(entry('b', '2026-10-02T00:00:02.000Z'));
+    store.touchPreview(projectId, 'a'.repeat(64), '2026-10-02T00:00:03.000Z');
+    store.close();
+    const again = await openLocalStore({ dataDir });
+    expect(again.getPreview(projectId, 'a'.repeat(64))).toEqual({
+      ...entry('a', '2026-10-02T00:00:01.000Z'),
+      usedAt: '2026-10-02T00:00:03.000Z',
+    });
+    expect(again.listPreviews().map((p) => p.key[0])).toEqual(['b', 'a']);
+    // Rendering the same key again replaces the row.
+    again.putPreview({ ...entry('b', '2026-10-02T00:00:04.000Z'), bytes: 7 });
+    expect(again.listPreviews().map((p) => [p.key[0], p.bytes])).toEqual([
+      ['a', 1100],
+      ['b', 7],
+    ]);
+    again.deletePreview(projectId, 'a'.repeat(64));
+    expect(again.getPreview(projectId, 'a'.repeat(64))).toBeNull();
+    expect(again.getPreview(ProjectId.parse(randomUUID()), 'b'.repeat(64))).toBeNull();
+    again.close();
+  });
+
+  it('drops a row it cannot read back instead of failing: it is a cache', async () => {
+    const dataDir = tempDir();
+    const store = await openLocalStore({ dataDir });
+    store.putPreview(entry('c', '2026-10-02T00:00:01.000Z'));
+    store.close();
+    const raw = new Database(join(dataDir, STATE_DB_FILE));
+    raw.prepare('UPDATE preview_cache SET data = ?').run('{"subject":{"kind":"page"}}');
+    raw.close();
+    const again = await openLocalStore({ dataDir });
+    expect(again.getPreview(projectId, 'c'.repeat(64))).toBeNull();
+    expect(again.listPreviews()).toEqual([]);
+    again.close();
+  });
+
+  it('migrates a version-2 database with a backup, keeping the journal', async () => {
+    const dataDir = tempDir();
+    const v2 = await openLocalStore({ dataDir, migrations: MIGRATIONS.filter((m) => m.version <= 2) });
+    v2.setAgentAccess(true, now());
+    v2.close();
+    const v3 = await openLocalStore({ dataDir });
+    expect(v3.storageSchemaVersion).toBe(3);
+    expect(v3.getAgentAccess().enabled).toBe(true);
+    expect(v3.listPreviews()).toEqual([]);
+    v3.close();
+    expect(readdirSync(dataDir).filter((f) => f.startsWith(`${STATE_DB_FILE}.backup-v2-`))).toHaveLength(1);
   });
 });
 

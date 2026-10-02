@@ -152,6 +152,8 @@ describe('engine core', () => {
       'history.list',
       'snapshot.diff',
       'snapshot.diffFile',
+      'snapshot.preview',
+      'preview.read',
       'restore.plan',
       'restore.apply',
       'recovery.inspect',

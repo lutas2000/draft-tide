@@ -81,6 +81,29 @@ export const MIGRATIONS: readonly Migration[] = [
       `);
     },
   },
+  {
+    version: 3,
+    name: 'preview-cache',
+    up(db) {
+      // An explicit cache table (TECH_STACK §6.1): the index of rendered
+      // previews, whose PNGs live in projects/<id>/cache/previews/. Every row
+      // can be rebuilt from Git and the render settings, so a row that can't
+      // be read back is dropped, not reported. data holds the PreviewRecord
+      // (contracts preview.ts).
+      db.exec(`
+        CREATE TABLE preview_cache (
+          project_id TEXT NOT NULL,
+          cache_key TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          used_at TEXT NOT NULL,
+          bytes INTEGER NOT NULL,
+          data TEXT NOT NULL,
+          PRIMARY KEY (project_id, cache_key)
+        ) STRICT;
+        CREATE INDEX preview_cache_by_use ON preview_cache (used_at);
+      `);
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0);

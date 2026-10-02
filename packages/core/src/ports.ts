@@ -12,6 +12,12 @@ import type {
   Origin,
   PlanId,
   PlanRecord,
+  PreviewBlocked,
+  PreviewEnvironment,
+  PreviewImageKind,
+  PreviewRecord,
+  PreviewSettings,
+  PreviewSubject,
   ProjectConfig,
   ProjectId,
   ProjectSummary,
@@ -68,6 +74,30 @@ export interface LocalStore {
   consumePlan(planId: PlanId, by: OperationId, at: IsoTimestamp, start?: OperationRecord): boolean;
   // Ended operations and plans older than this go; unfinished ones never do.
   prune(before: IsoTimestamp): void;
+
+  // The preview cache's index (TECH_STACK §6.1: an explicit cache table,
+  // rebuildable from Git and the render settings). A row that can't be read
+  // back is dropped and reported as absent: it is a cache, not state.
+  getPreview(projectId: ProjectId, key: string): StoredPreview | null;
+  // Inserts or replaces.
+  putPreview(entry: StoredPreview): void;
+  touchPreview(projectId: ProjectId, key: string, at: IsoTimestamp): void;
+  deletePreview(projectId: ProjectId, key: string): void;
+  // Every cached preview, least recently used first.
+  listPreviews(): PreviewCacheEntry[];
+}
+
+export interface PreviewCacheEntry {
+  projectId: ProjectId;
+  key: string;
+  usedAt: IsoTimestamp;
+  // Both PNGs.
+  bytes: number;
+}
+
+export interface StoredPreview extends PreviewCacheEntry {
+  createdAt: IsoTimestamp;
+  record: PreviewRecord;
 }
 
 export interface OperationRecord {
@@ -138,6 +168,83 @@ export interface CorePorts {
   events: EventSink;
   identity: EngineIdentity;
   host: ProjectHost;
+  // Without them previews answer PREVIEW_FAILED (no-renderer).
+  previews?: PreviewPorts;
+}
+
+// ---- Previews (M1 plan §8, TECH_STACK §10)
+
+export interface PreviewPorts {
+  renderer: PreviewRenderer;
+  images: PreviewImageStore;
+  // The time zone pages see (IANA name): the computer's own, recorded and
+  // part of every cache key.
+  timezone: string;
+}
+
+// The Preview Host supervisor (implemented by the Engine's composition root).
+// It runs one render at a time per call; core queues and deduplicates.
+export interface PreviewRenderer {
+  // What renders (Electron and Chromium versions), part of every cache key;
+  // null when this Engine has no Preview Host.
+  readonly rendererId: string | null;
+  // Renders and captures. Every file the page asks for comes from `files`;
+  // the host is given nothing else. PREVIEW_FAILED (with a reason) when no
+  // image comes back; the signal stops the render and its host.
+  render(job: RenderJob, files: PreviewFileSource, signal: AbortSignal): Promise<RenderOutput>;
+}
+
+export interface RenderJob {
+  jobId: string;
+  // A host serves the jobs of one project only.
+  projectId: ProjectId;
+  subject: PreviewSubject;
+  settings: PreviewSettings;
+  // Exactly the sizes the PNGs must have.
+  output: { width: number; height: number };
+  thumbnail: { width: number; height: number };
+  timeoutMs: number;
+}
+
+export type ServedFile = { status: 'ok'; contentType: string; bytes: Uint8Array } | { status: 'missing' };
+
+// What a render's page may read: the files of one version, decided by core.
+export interface PreviewFileSource {
+  // `path` is the URL pathname the page asked for, still percent-encoded.
+  read(path: string): Promise<ServedFile>;
+}
+
+export interface CapturedImage {
+  png: Uint8Array;
+  width: number;
+  height: number;
+}
+
+export interface RenderOutput {
+  full: CapturedImage;
+  thumbnail: CapturedImage;
+  // Raw targets, as the host saw them; core makes them printable.
+  blocked: PreviewBlocked;
+  environment: PreviewEnvironment;
+}
+
+// The PNG files of cached previews (<data>/projects/<id>/cache/previews/).
+export interface PreviewImageStore {
+  write(projectId: ProjectId, key: string, image: PreviewImageKind, png: Uint8Array): Promise<void>;
+  // Up to `length` bytes from `offset`; null when the file is gone.
+  read(
+    projectId: ProjectId,
+    key: string,
+    image: PreviewImageKind,
+    offset: number,
+    length: number,
+  ): Promise<Uint8Array | null>;
+  // Whether both PNGs are there.
+  has(projectId: ProjectId, key: string): Promise<boolean>;
+  remove(projectId: ProjectId, key: string): Promise<void>;
+  // Removes every cached PNG except those of the previews named here, as
+  // `<project-id>/<key>` (files a crash left without an index row go too).
+  removeAllExcept(keep: ReadonlySet<string>): Promise<void>;
 }
 
 // Development and test builds only: named points inside long operations where

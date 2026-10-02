@@ -1,5 +1,5 @@
 import { TERMINAL_OPERATION_STATES, type AgentAccess, type ProjectSummary } from '@draft-tide/contracts';
-import type { LocalStore, OperationFile, OperationRecord, StoredPlan } from '../src/index.ts';
+import type { LocalStore, OperationFile, OperationRecord, StoredPlan, StoredPreview } from '../src/index.ts';
 
 // An in-memory stand-in for the SQLite store, with the same compare-and-set
 // and once-only semantics. The real store's own tests are in local-store; the
@@ -8,11 +8,13 @@ export function memoryStore(projects: unknown[] = []): LocalStore & {
   access: AgentAccess;
   operations: Map<string, OperationRecord>;
   plans: Map<string, StoredPlan>;
+  previews: Map<string, StoredPreview>;
 } {
   const list = projects as ProjectSummary[];
   const operations = new Map<string, OperationRecord>();
   const files = new Map<string, OperationFile[]>();
   const plans = new Map<string, StoredPlan>();
+  const previews = new Map<string, StoredPreview>();
   const clone = <T>(v: T): T => structuredClone(v);
   return {
     storageSchemaVersion: 2,
@@ -20,6 +22,7 @@ export function memoryStore(projects: unknown[] = []): LocalStore & {
     access: { enabled: false, updatedAt: null },
     operations,
     plans,
+    previews,
     getAgentAccess() {
       return this.access;
     },
@@ -87,5 +90,23 @@ export function memoryStore(projects: unknown[] = []): LocalStore & {
         if (TERMINAL_OPERATION_STATES.has(r.state) && r.updatedAt < before) operations.delete(id);
       }
     },
+    getPreview: (projectId, key) => {
+      const p = previews.get(`${projectId}/${key}`);
+      return p ? clone(p) : null;
+    },
+    putPreview: (entry) => {
+      // Re-inserted at the end, as a fresh row would be.
+      previews.delete(`${entry.projectId}/${entry.key}`);
+      previews.set(`${entry.projectId}/${entry.key}`, clone(entry));
+    },
+    touchPreview(projectId, key, at) {
+      const p = previews.get(`${projectId}/${key}`);
+      if (p) p.usedAt = at;
+    },
+    deletePreview: (projectId, key) => void previews.delete(`${projectId}/${key}`),
+    listPreviews: () =>
+      [...previews.values()]
+        .map((p) => ({ projectId: p.projectId, key: p.key, usedAt: p.usedAt, bytes: p.bytes }))
+        .sort((a, b) => (a.usedAt < b.usedAt ? -1 : a.usedAt > b.usedAt ? 1 : 0)),
   };
 }

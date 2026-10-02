@@ -214,7 +214,11 @@ async function currentConfig(
 }
 
 // A blob's bytes, or null when it is larger than max.
-export async function readSmallBlob(repo: ProjectGit, oid: GitOid, max: number): Promise<Uint8Array | null> {
+export async function readSmallBlob(
+  repo: Pick<ProjectGit, 'streamBlob'>,
+  oid: GitOid,
+  max: number,
+): Promise<Uint8Array | null> {
   const chunks: Uint8Array[] = [];
   let length = 0;
   for await (const chunk of repo.streamBlob(oid)) {
