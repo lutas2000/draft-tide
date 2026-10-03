@@ -8,7 +8,7 @@ M1-09 turns the M1 build into an installable alpha. This first part builds the m
 - **One command** (`corepack pnpm run release:mac`) builds, packages, sets the fuses, signs every Mach-O with the team's Developer ID, checks the result statically and at runtime, notarizes and staples (with a notary profile), and makes the disk image.
 - **The Preview Host has its own identity.** It is its own executable beside the app's (`Contents/MacOS/Draft Tide Preview`), signed under its own identifier, so the Engine's desktop check rejects it. Release builds now render previews.
 
-The release run passes all ten checks, is notarized and stapled, and Gatekeeper accepts both the downloaded disk image and the app copied out of it. The signed app opened, and it passed the Engine's code-signature check and nonce handshake. Release builds compile in the release GitHub App (`draft-tide`), and Git's GPL source ships as an asset of the same GitHub Release.
+The release run passes all twelve checks, is notarized and stapled, and Gatekeeper accepts both the downloaded disk image and the app copied out of it. The signed app opened, and it passed the Engine's code-signature check and nonce handshake. Release builds compile in the release GitHub App (`draft-tide`), and Git's GPL source ships as an asset of the same GitHub Release.
 
 Still to come in M1-09: the rest of the GitHub round trip with the packaged app (sign-in, connect and the first push passed), the diagnostics export, the clean-machine and usability gates, and the install / uninstall guide (see "What is left").
 
@@ -75,7 +75,7 @@ Identifiers (default app id `app.drafttide.desktop`, overridable with `DT_DESKTO
 | Id | What |
 |---|---|
 | S1 | `codesign --verify --deep --strict` on the bundle |
-| S2 | Every Mach-O (20) is signed by the team's Developer ID, with hardened runtime and a secure timestamp, and carries no `get-task-allow`, dyld variables or `disable-library-validation` |
+| S2 | Every Mach-O (21) is signed by the team's Developer ID, with hardened runtime and a secure timestamp, and carries no `get-task-allow`, dyld variables or `disable-library-validation` |
 | S3 | The app, the Preview Host, Node, Engine, addons and Git have the identifiers above; of these only the Preview Host, the Node and the Engine have JIT |
 | S4 | The app satisfies the desktop requirement; the Preview Host, the companion Node, the Engine and every helper fail it |
 | S5 | The Engine's designated requirement pins its identifier, the Developer ID markers and the team (what its keychain item trusts) |
@@ -139,7 +139,7 @@ corepack pnpm exec vitest run packages/engine-client/test/launch-layout.test.ts 
 
 ## Results (this machine)
 
-`corepack pnpm run check`: format, lint, typecheck and build clean; **576 passed, 3 skipped** (the same skips as before). M1-08 had 556; the 20 new tests are the SEA, launch, layout and release tests. Desktop E2E: **33/33**.
+`corepack pnpm run check` (part 1): format, lint, typecheck and build clean; **576 passed, 3 skipped** (the same skips as before). M1-08 had 556; the 20 new tests are the SEA, launch, layout and release tests. Desktop E2E: **33/33**.
 
 Two release runs, signed with Developer ID `ZUHKJTHALN`, not notarized: all ten checks pass both times. The second run, with the Git tarball cached, took 132 s and produced a 202.7 MiB disk image. Gatekeeper rejects the app and the disk image as `Unnotarized Developer ID`, which is expected. The signed app, started against a scratch data directory, ran its GUI against the signed Engine:
 - **Engine log.** `ready: release 0.1.0-alpha.0 … desktop identity code-signature`, with no refused handshake.
@@ -156,6 +156,12 @@ Notarized runs with the `draft-tide` notary profile, the final one with the rele
 - **Output.** A 204.6 MiB disk image and an 8.1 MB `draft-tide-0.1.0-alpha.0-gpl-sources.tar`.
 
 The release GitHub App answers a device-flow request (Device Flow is on), and its page is public.
+
+**With the Preview Host** (a notarized run after the spike):
+- **Checks.** All twelve pass. S2 now counts 21 Mach-Os (the Preview Host is the new one). R4 rendered the check page through the packaged Preview Host under the Engine's supervisor; the live host reported `app.drafttide.desktop.preview-host` and failed the desktop requirement. R5: both executables refused the other's role.
+- **Notarization and Gatekeeper.** Apple accepted the app and the disk image with the extra executable in `Contents/MacOS`. Gatekeeper accepts both as `Notarized Developer ID`, including quarantined copies.
+- **Output.** A 203.0 MiB disk image; about 6 minutes in all.
+- **Tests.** `corepack pnpm run check`: **578 passed, 3 skipped**. Desktop E2E: **33/33** (development builds keep one binary and the flag).
 
 **The packaged app against the real GitHub** (2026-10-03, by the owner, in the GUI of the notarized build): sign-in with the release GitHub App `draft-tide` (device flow), installing the app on an empty repository, connecting the project to it, and the first push all succeeded. Opening that project from GitHub in another folder has not been run with the packaged app yet.
 
