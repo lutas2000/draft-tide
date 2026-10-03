@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DEFAULT_EXCLUDE_DIR_NAMES, DEFAULT_EXCLUDE_FILE_PATTERNS, DtError } from '@draft-tide/contracts';
@@ -165,16 +166,17 @@ describe('listings', () => {
   });
 
   it('measures the object store, loose objects and packs, writing nothing', async () => {
-    const root = committedRepo({ 'a.txt': 'hello\n', 'big.bin': Buffer.alloc(300_000, 7) });
+    // Random bytes don't compress, loose or packed, so the store holds at
+    // least this much on every platform (Windows Git counts bytes, not disk
+    // blocks, in whole KiB).
+    const root = committedRepo({ 'a.txt': 'hello\n', 'big.bin': randomBytes(64 * 1024) });
     const repo = openGitRepo(rt, root);
     const loose = await repo.objectStoreSize();
-    // Loose objects are zlib-compressed; the 300 KB of one byte takes almost
-    // nothing, the rest at least a block each.
-    expect(loose).toBeGreaterThan(0);
+    expect(loose).toBeGreaterThanOrEqual(64 * 1024);
     expect(loose % 1024).toBe(0);
     plainGit(root, ['gc', '--quiet']);
     const packed = await repo.objectStoreSize();
-    expect(packed).toBeGreaterThan(0);
+    expect(packed).toBeGreaterThanOrEqual(64 * 1024);
     const before = digestTree(join(root, '.git'));
     await repo.objectStoreSize();
     expect(digestTree(join(root, '.git'))).toEqual(before);

@@ -1,6 +1,7 @@
 // 設定與診斷 on a real Engine (M1 plan §4.1): storage use by part, and the
 // diagnostics report, which must carry no folder, name, id, account or token
 // the Engine knows, even where its log quotes them.
+import { randomBytes } from 'node:crypto';
 import { appendFileSync, mkdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { DATA_STORE_PARTS, DiagnosticsReport, DtError } from '@draft-tide/contracts';
@@ -21,7 +22,9 @@ beforeAll(async () => {
   root = join(realpathSync(tempDir()), 'Secret Client');
   mkdirSync(root);
   write(root, 'index.html', '<h1>hi</h1>\n');
-  write(root, 'logo.png', Buffer.alloc(20_000, 3));
+  // Random bytes don't compress, so the history holds at least this much on
+  // every platform (Windows Git counts bytes, not disk blocks, in whole KiB).
+  write(root, 'logo.png', randomBytes(64 * 1024));
   const review = await desktop.call('project.review', { root });
   const bound = await desktop.call('project.bind', {
     root,
@@ -59,7 +62,7 @@ describe('設定與診斷', () => {
     expect(usage.projects).toEqual([
       expect.objectContaining({ projectId, name: NAME, sameVolumeAsDataStore: expect.any(Boolean) as boolean }),
     ]);
-    expect(usage.projects[0]?.historyBytes).toBeGreaterThan(0);
+    expect(usage.projects[0]?.historyBytes).toBeGreaterThanOrEqual(64 * 1024);
     expect(usage.projects[0]?.availableBytes).toBeGreaterThan(0);
   });
 
@@ -94,7 +97,7 @@ describe('設定與診斷', () => {
         sync: null,
       }),
     ]);
-    expect(report.projects[0]?.historyBytes).toBeGreaterThan(0);
+    expect(report.projects[0]?.historyBytes).toBeGreaterThanOrEqual(64 * 1024);
     expect(report.agentAccess.enabled).toBe(true);
     expect(report.app.runtime.git).toMatch(/^\d+\.\d+\.\d+$/);
     expect(report.operations.readError).toBeNull();

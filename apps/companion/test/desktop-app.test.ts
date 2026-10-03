@@ -30,20 +30,25 @@ afterAll(async () => {
 });
 
 describe('which app the Engine opens', () => {
-  it('opens the app bundle it ships in, in a release on macOS, and nothing else', () => {
-    const bundle = join(scratch, 'Draft Tide.app');
-    const layout = packagedLayout(join(bundle, 'Contents', 'Resources'), 'darwin');
-    const engine = { sea: true, execPath: layout.engine, platform: 'darwin' as const };
-    const env = { [APP_LAUNCH_ENV]: JSON.stringify({ command: '/bin/evil', args: [] }) };
-    // Not a packaged app (no Info.plist): nothing to open.
-    expect(desktopAppStarter(RELEASE, env, engine)).toBeNull();
-    mkdirSync(join(bundle, 'Contents'), { recursive: true });
-    writeFileSync(join(bundle, 'Contents', 'Info.plist'), '');
-    expect(desktopAppStarter(RELEASE, env, engine)).toEqual({ kind: 'bundle', bundle });
-    // Not the packaged Engine, or not macOS.
-    expect(desktopAppStarter(RELEASE, env, { ...engine, sea: false })).toBeNull();
-    expect(desktopAppStarter(RELEASE, env, { ...engine, platform: 'linux' })).toBeNull();
-  });
+  // The release starter exists on macOS only; this lays out a bundle with
+  // the host's paths, which are not POSIX paths on Windows.
+  it.skipIf(process.platform === 'win32')(
+    'opens the app bundle it ships in, in a release on macOS, and nothing else',
+    () => {
+      const bundle = join(scratch, 'Draft Tide.app');
+      const layout = packagedLayout(join(bundle, 'Contents', 'Resources'), 'darwin');
+      const engine = { sea: true, execPath: layout.engine, platform: 'darwin' as const };
+      const env = { [APP_LAUNCH_ENV]: JSON.stringify({ command: '/bin/evil', args: [] }) };
+      // Not a packaged app (no Info.plist): nothing to open.
+      expect(desktopAppStarter(RELEASE, env, engine)).toBeNull();
+      mkdirSync(join(bundle, 'Contents'), { recursive: true });
+      writeFileSync(join(bundle, 'Contents', 'Info.plist'), '');
+      expect(desktopAppStarter(RELEASE, env, engine)).toEqual({ kind: 'bundle', bundle });
+      // Not the packaged Engine, or not macOS.
+      expect(desktopAppStarter(RELEASE, env, { ...engine, sea: false })).toBeNull();
+      expect(desktopAppStarter(RELEASE, env, { ...engine, platform: 'linux' })).toBeNull();
+    },
+  );
 
   it('opens it with open -n, passing a data directory other than the default', () => {
     const starter = { kind: 'bundle' as const, bundle: '/Applications/Draft Tide.app' };
