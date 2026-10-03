@@ -16,9 +16,14 @@ export interface BuildInfo {
   github: { clientId: string | null; appSlug: string | null };
 }
 
-// The development GitHub App (installable on its owner's account only). The
-// release app is created before M1-09 and passed to release builds.
+// The development GitHub App (installable on its owner's account only).
 export const DEV_GITHUB_APP = { clientId: 'Iv23lisc6TyzrEU07Wt4', appSlug: 'draft-tide-dev-lutas2000' } as const;
+
+// The release GitHub App (public, installable on any account; created
+// 2026-10-03). Release builds compile it in unless DT_GITHUB_CLIENT_ID and
+// DT_GITHUB_APP_SLUG name another. The client ID is public; there is no client
+// secret or private key anywhere.
+export const RELEASE_GITHUB_APP = { clientId: 'Iv23li5bVjuyY8pVqtz5', appSlug: 'draft-tide' } as const;
 
 declare const __DT_BUILD__: BuildInfo | undefined;
 
