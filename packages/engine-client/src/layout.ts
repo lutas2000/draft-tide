@@ -22,10 +22,14 @@ export interface PackagedLayout {
   // there because Electron finds its framework, helpers and app.asar from
   // the executable's bundle, and checks the asar's integrity only inside it.
   previewHost: string;
+  // The desktop app itself: its bundle on macOS (what `open` launches), its
+  // executable elsewhere. The Engine opens it for a request (M1 plan §5).
+  app: string;
 }
 
 export const ENGINE_EXECUTABLE = 'draft-tide-engine';
 export const PREVIEW_HOST_EXECUTABLE = 'Draft Tide Preview';
+export const APP_EXECUTABLE = 'Draft Tide';
 
 export function packagedLayout(resources: string, platform: NodeJS.Platform = process.platform): PackagedLayout {
   const path = platform === 'win32' ? win32 : posix;
@@ -43,5 +47,6 @@ export function packagedLayout(resources: string, platform: NodeJS.Platform = pr
       platform === 'darwin'
         ? path.join(resources, '..', 'MacOS', PREVIEW_HOST_EXECUTABLE)
         : path.join(resources, '..', exe(PREVIEW_HOST_EXECUTABLE)),
+    app: platform === 'darwin' ? path.join(resources, '..', '..') : path.join(resources, '..', exe(APP_EXECUTABLE)),
   };
 }

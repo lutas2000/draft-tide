@@ -114,6 +114,7 @@ export class World {
       checkAttributes: (paths) =>
         Promise.resolve(new Map(paths.map((p) => [p, { ...NO_ATTRS, ...this.attrs.get(p) }]))),
       existingBlobs: (oids) => Promise.resolve(new Set(oids.filter((o) => this.blobs.has(o)))),
+      objectStoreSize: () => Promise.resolve(this.blobs.size * 1024),
     };
   }
 

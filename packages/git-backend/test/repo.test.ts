@@ -7,6 +7,7 @@ import {
   createScratchGitDir,
   gitEnvironment,
   gitTrace,
+  gitVersion,
   openGitRepo,
   runGit,
   type GitRuntime,
@@ -163,6 +164,22 @@ describe('listings', () => {
     await expect(openGitRepo(rt, root).existingBlobs(['HEAD'])).rejects.toThrow('invalid object id');
   });
 
+  it('measures the object store, loose objects and packs, writing nothing', async () => {
+    const root = committedRepo({ 'a.txt': 'hello\n', 'big.bin': Buffer.alloc(300_000, 7) });
+    const repo = openGitRepo(rt, root);
+    const loose = await repo.objectStoreSize();
+    // Loose objects are zlib-compressed; the 300 KB of one byte takes almost
+    // nothing, the rest at least a block each.
+    expect(loose).toBeGreaterThan(0);
+    expect(loose % 1024).toBe(0);
+    plainGit(root, ['gc', '--quiet']);
+    const packed = await repo.objectStoreSize();
+    expect(packed).toBeGreaterThan(0);
+    const before = digestTree(join(root, '.git'));
+    await repo.objectStoreSize();
+    expect(digestTree(join(root, '.git'))).toEqual(before);
+  });
+
   it('writes nothing while listing', async () => {
     const root = committedRepo({ 'a.txt': 'a', '.gitattributes': '*.txt text\n' });
     write(root, 'a.txt', 'changed');
@@ -296,6 +313,8 @@ describe('runGit', () => {
     const err = await dtError(runGit(bad, ['--version'], tempDir()));
     expect(err.code).toBe('GIT_FAILED');
     expect(err.details['reason']).toBe('git-unavailable');
+    expect(await gitVersion(bad)).toBeNull();
+    expect(await gitVersion(rt)).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
   it('reports a failing command with its exit code', async () => {

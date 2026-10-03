@@ -2,8 +2,9 @@
 // desktop-channel session with the Engine. It never opens the database, runs
 // Git or runs a writable core. Nothing here runs until runApp(): the same
 // binary may be starting as a Preview Host instead (main.ts).
-import { existsSync } from 'node:fs';
-import { isAbsolute, join, resolve, sep } from 'node:path';
+import { existsSync, mkdirSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
+import { basename, isAbsolute, join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   BrowserWindow,
@@ -17,9 +18,17 @@ import {
   shell,
   type IpcMainInvokeEvent,
 } from 'electron';
-import { DtError, OPERATIONS, errorEnvelope, isOperationName, isSingleLine } from '@draft-tide/contracts';
-import { defaultDataDir, packagedLayout, resolveDataDir } from '@draft-tide/engine-client';
-import { IPC, type AgentSetup, type ConnectionState } from '../shared/bridge.ts';
+import {
+  DiagnosticsReport,
+  DtError,
+  OPERATIONS,
+  errorEnvelope,
+  isOperationName,
+  isSingleLine,
+  toErrorInfo,
+} from '@draft-tide/contracts';
+import { defaultDataDir, desktopProfileDir, packagedLayout, resolveDataDir } from '@draft-tide/engine-client';
+import { IPC, type AgentSetup, type ConnectionState, type DiagnosticsExport } from '../shared/bridge.ts';
 import { BUILD } from './build-info.ts';
 import { DesktopEngine } from './engine.ts';
 
@@ -64,10 +73,52 @@ function agentSetup(): AgentSetup {
   };
 }
 
+// Chromium's profile (Electron's userData and session data: cookies, local
+// storage, caches) goes to its own subfolder of the data directory this window
+// uses, never beside the Engine's state.sqlite. Before anything reads the
+// path: the single-instance lock is kept there, so one app instance runs per
+// data store.
+function useDesktopProfile(): void {
+  const profile = desktopProfileDir(resolveDataDir());
+  mkdirSync(profile, { recursive: true, mode: 0o700 });
+  app.setPath('userData', profile);
+  app.setPath('sessionData', profile);
+  app.setPath('crashDumps', join(profile, 'Crashpad'));
+}
+
+// An agent asked for something only the user does here (request.waiting),
+// or the app was opened again (a second instance, which may be the Engine
+// opening it for a request): the window comes forward, at most this often.
+// The request itself shows as a banner on every screen; nothing is answered
+// for the user.
+const ATTEND_EVERY_MS = 3_000;
+let attendedAt = 0;
+
+function attend(): void {
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  if (!win.isVisible()) win.show();
+  if (win.isFocused() || Date.now() - attendedAt < ATTEND_EVERY_MS) return;
+  attendedAt = Date.now();
+  win.focus();
+  app.focus({ steal: true });
+  // Where the system keeps another app in front, the Dock icon or the
+  // taskbar asks for attention instead.
+  if (process.platform === 'darwin') app.dock?.bounce('informational');
+  else if (!win.isFocused()) {
+    win.flashFrame(true);
+    win.once('focus', () => win?.flashFrame(false));
+  }
+}
+
 export function runApp(): void {
+  useDesktopProfile();
   engine = new DesktopEngine({
     onState: (state: ConnectionState) => win?.webContents.send(IPC.connection, state),
-    onEvent: (event) => win?.webContents.send(IPC.event, event),
+    onEvent: (event) => {
+      if (event.event.name === 'request.waiting') attend();
+      win?.webContents.send(IPC.event, event);
+    },
   });
 
   protocol.registerSchemesAsPrivileged([
@@ -155,6 +206,57 @@ export function runApp(): void {
     return true;
   });
   ipcMain.handle(IPC.agentSetup, (event) => (trusted(event) ? agentSetup() : null));
+  // The diagnostics export: the user picks where in the native dialog, Main
+  // gets the report from the Engine itself (de-identified there, checked
+  // against its schema again here) and writes it. The renderer only asks.
+  let lastExport: string | null = null;
+  ipcMain.handle(IPC.exportDiagnostics, async (event): Promise<DiagnosticsExport | null> => {
+    if (!trusted(event) || !win) return null;
+    const stamp = new Date()
+      .toISOString()
+      .replace(/[-:]/g, '')
+      .replace(/\.\d+Z$/, '')
+      .replace('T', '-');
+    const chosen = await dialog.showSaveDialog(win, {
+      title: '匯出診斷資訊',
+      buttonLabel: '儲存',
+      defaultPath: join(app.getPath('downloads'), `draft-tide-diagnostics-${stamp}.json`),
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+      properties: ['createDirectory', 'showOverwriteConfirmation'],
+    });
+    if (chosen.canceled || !chosen.filePath) return { status: 'cancelled' };
+    const envelope = await engine.invoke('diagnostics.report', {});
+    const report = DiagnosticsReport.safeParse(envelope.data);
+    if (!envelope.ok || !report.success) {
+      return {
+        status: 'failed',
+        error:
+          envelope.error ?? toErrorInfo(new DtError('INTERNAL_ERROR', 'the report was not what Draft Tide expects')),
+      };
+    }
+    try {
+      await writeFile(chosen.filePath, `${JSON.stringify(report.data, null, 2)}\n`, { mode: 0o600 });
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException | null)?.code;
+      return {
+        status: 'failed',
+        error: toErrorInfo(
+          new DtError(
+            code === 'ENOSPC' ? 'INSUFFICIENT_DISK_SPACE' : 'STORAGE_IO_FAILED',
+            'the report could not be saved there',
+            code ? { errno: code } : {},
+          ),
+        ),
+      };
+    }
+    lastExport = chosen.filePath;
+    return { status: 'saved', fileName: basename(chosen.filePath), report: report.data };
+  });
+  ipcMain.handle(IPC.revealDiagnostics, (event) => {
+    if (!trusted(event) || lastExport === null || !existsSync(lastExport)) return false;
+    shell.showItemInFolder(lastExport);
+    return true;
+  });
   ipcMain.handle(IPC.connectionState, (event) => (trusted(event) ? engine.state : null));
   ipcMain.handle(IPC.reconnect, async (event) => {
     if (!trusted(event)) return null;
@@ -166,8 +268,11 @@ export function runApp(): void {
     app.quit();
   } else {
     app.on('second-instance', () => {
-      if (win?.isMinimized()) win.restore();
-      win?.focus();
+      attendedAt = 0;
+      attend();
+      // The Engine may have started again meanwhile: don't wait for the
+      // reconnect backoff.
+      engine.connect().catch(() => undefined);
     });
     // Every web contents: no new windows, no navigation away from the GUI, no
     // webviews, no permissions.

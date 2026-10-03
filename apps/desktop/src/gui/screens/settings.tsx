@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, type ReactNode } from 'react';
-import type { OperationStatus } from '@draft-tide/contracts';
-import type { ConnectionState } from '../../shared/bridge.ts';
+import type { OperationStatus, StorageUsage } from '@draft-tide/contracts';
+import type { ConnectionState, DiagnosticsExport } from '../../shared/bridge.ts';
 import { Agent, Alert, Check } from '../components/icons.tsx';
 import {
   GitHubRequestBanner,
@@ -14,6 +14,7 @@ import { ConfirmDialog } from '../components/ui/alert-dialog.tsx';
 import { Badge } from '../components/ui/badge.tsx';
 import { Button } from '../components/ui/button.tsx';
 import { Card, CardBody, CardHeader } from '../components/ui/card.tsx';
+import { Details } from '../components/ui/details.tsx';
 import { Switch } from '../components/ui/switch.tsx';
 import { ORIGIN_LABEL } from '../lib/copy.ts';
 import {
@@ -24,7 +25,14 @@ import {
   useProjects,
   useSetAgentAccess,
 } from '../lib/engine-state.ts';
-import { agentSetup, copyText, engineCall } from '../lib/bridge.ts';
+import {
+  EngineCallError,
+  agentSetup,
+  copyText,
+  engineCall,
+  exportDiagnostics,
+  revealDiagnostics,
+} from '../lib/bridge.ts';
 import { formatBytes, formatWhen, shortId } from '../lib/format.ts';
 import { usePreviewStatus, previewStatusKey } from '../lib/preview.ts';
 import type { Navigate } from '../lib/route.ts';
@@ -260,6 +268,7 @@ function PreviewCard() {
     onSettled: () => {
       void client.invalidateQueries({ queryKey: previewStatusKey });
       void client.invalidateQueries({ queryKey: ['snapshot.preview'] });
+      void client.invalidateQueries({ queryKey: usageKey });
     },
   });
   const s = status.data;
@@ -452,12 +461,184 @@ function AttentionCard({ navigate }: { navigate: Navigate }) {
   );
 }
 
+// ---- 容量 (M1 plan §4.1, §6.3): what Draft Tide takes on this computer and
+// the room left, with the steps that free some. Nothing here is a quota.
+
+const usageKey = ['diagnostics.usage'] as const;
+// Below this, saving and restoring may run short (they check exactly what
+// they need first; this only warns early).
+const LOW_SPACE_BYTES = 1024 * 1024 * 1024;
+
+const PART_LABEL: Record<keyof StorageUsage['dataStore']['parts'], { label: string; note?: string }> = {
+  database: { label: '本機狀態', note: '連接的專案、回復計畫、操作紀錄與同步佇列' },
+  staging: { label: '進行中操作的暫存', note: '操作結束後自動清除' },
+  previews: { label: '畫面預覽快取', note: '可在下方「畫面預覽」清除，需要時會重新產生' },
+  logs: { label: '記錄檔' },
+  desktop: { label: 'App 的瀏覽器資料' },
+  other: { label: '其他' },
+};
+
+function StorageCard() {
+  const usage = useQuery({
+    queryKey: usageKey,
+    queryFn: () => engineCall('diagnostics.usage', {}),
+    staleTime: 30_000,
+  });
+  const u = usage.data;
+  const low = (n: number | null) => n !== null && n < LOW_SPACE_BYTES;
+  const lowSpace = u ? low(u.dataStore.availableBytes) || u.projects.some((p) => low(p.availableBytes)) : false;
+  return (
+    <Card aria-label="容量">
+      <CardHeader
+        title="容量"
+        description="Draft Tide 在這台電腦上用了多少空間、還有多少可用空間。每個專案的歷史就在它資料夾的 .git 裡。"
+        action={
+          <Button size="sm" variant="ghost" onClick={() => void usage.refetch()} disabled={usage.isFetching}>
+            {usage.isFetching ? '計算中…' : '重新計算'}
+          </Button>
+        }
+      />
+      <CardBody className="flex flex-col gap-4">
+        {usage.isError ? (
+          <ErrorNote error={usage.error} />
+        ) : !u ? (
+          <p className="text-[13px] text-ink-3">計算中…</p>
+        ) : (
+          <>
+            {lowSpace && (
+              <div
+                className="flex gap-3 rounded-lg border border-warn-line bg-warn-soft px-4 py-3 text-[13px] text-warn"
+                role="status"
+              >
+                <Alert className="mt-0.5 size-4 shrink-0" />
+                <p>
+                  可用空間不到 {formatBytes(LOW_SPACE_BYTES)}
+                  。保存與回復都需要空間：可以清除畫面預覽快取、完成需要恢復的操作（它們的暫存會一起清除），或移走其他不需要的檔案。
+                </p>
+              </div>
+            )}
+            <div>
+              <p className="mb-1 text-[13px] font-medium text-ink">Draft Tide 的資料</p>
+              <dl className="divide-y divide-line">
+                {(Object.keys(PART_LABEL) as (keyof typeof PART_LABEL)[]).map((part) => (
+                  <Row key={part} label={PART_LABEL[part].label}>
+                    {formatBytes(u.dataStore.parts[part])}
+                    {PART_LABEL[part].note && (
+                      <span className="text-[12px] text-ink-3"> · {PART_LABEL[part].note}</span>
+                    )}
+                  </Row>
+                ))}
+                <Row label="合計">
+                  <span className="font-medium">{formatBytes(u.dataStore.total)}</span>
+                  {!u.dataStore.complete && <span className="text-[12px] text-ink-3"> · 項目太多，只計算了一部分</span>}
+                </Row>
+                <Row label="可用空間">
+                  {u.dataStore.availableBytes === null ? '無法讀取' : formatBytes(u.dataStore.availableBytes)}
+                </Row>
+              </dl>
+            </div>
+            <div>
+              <p className="mb-1 text-[13px] font-medium text-ink">各專案的歷史</p>
+              {u.projects.length === 0 ? (
+                <p className="text-[13px] text-ink-3">還沒有連接任何專案。</p>
+              ) : (
+                <dl className="divide-y divide-line">
+                  {u.projects.map((p) => (
+                    <Row key={p.projectId} label={p.name || '專案'}>
+                      {p.historyBytes === null ? (
+                        <span className="text-ink-3">無法讀取（資料夾或它的 .git 不在原處）</span>
+                      ) : (
+                        <>
+                          歷史 {formatBytes(p.historyBytes)}
+                          {p.availableBytes !== null && (
+                            <span className="text-[12px] text-ink-3">
+                              {' '}
+                              · {p.sameVolumeAsDataStore ? '同一個磁碟' : '所在磁碟'}可用{' '}
+                              {formatBytes(p.availableBytes)}
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </Row>
+                  ))}
+                </dl>
+              )}
+            </div>
+          </>
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
+// ---- 診斷資訊 (M1 plan §4.1): a de-identified report the user saves and
+// sends with a problem report. Draft Tide sends nothing itself. Main writes
+// the file; the app shows what was saved.
+function DiagnosticsCard() {
+  const [saved, setSaved] = useState<Extract<DiagnosticsExport, { status: 'saved' }> | null>(null);
+  const run = useMutation({
+    mutationFn: async () => {
+      const result = await exportDiagnostics();
+      if (result?.status === 'failed') throw new EngineCallError(result.error);
+      return result;
+    },
+    onSuccess: (result) => {
+      if (result?.status === 'saved') setSaved(result);
+    },
+  });
+  return (
+    <Card aria-label="診斷資訊">
+      <CardHeader
+        title="診斷資訊"
+        description="遇到問題時，可以把一份去識別化的診斷資訊存成檔案，附在問題回報裡。Draft Tide 不會自行傳送任何資料。"
+      />
+      <CardBody className="flex flex-col gap-3">
+        <ul className="flex list-disc flex-col gap-1.5 pl-5 text-[13px] text-ink-2">
+          <li>
+            包含：版本與執行環境、容量、每個專案與操作的狀態和錯誤代碼（以 project-1
+            這類代號表示），以及引擎記錄檔的最後一段。
+          </li>
+          <li>
+            不包含：設計檔案的內容、檔名與資料夾路徑、專案名稱、GitHub 帳號與 repo
+            名稱、登入資訊。記錄檔裡的路徑、名稱與識別碼都換成了代號。
+          </li>
+        </ul>
+        <div>
+          <Button size="sm" variant="secondary" onClick={() => run.mutate()} disabled={run.isPending}>
+            {run.isPending ? '匯出中…' : '匯出診斷資訊…'}
+          </Button>
+        </div>
+        {run.isError && <ErrorNote error={run.error} />}
+        {saved && (
+          <div className="flex flex-col gap-2">
+            <p
+              className="flex flex-wrap items-center gap-2 rounded-md bg-ok-soft px-3 py-2 text-[13px] text-ok"
+              role="status"
+            >
+              <Check className="size-4" />
+              已儲存「{saved.fileName}」。傳送前可以先打開看看內容。
+              <Button size="sm" variant="ghost" onClick={() => void revealDiagnostics()}>
+                顯示檔案位置
+              </Button>
+            </p>
+            <Details summary="檢視內容">
+              <pre className="max-h-80 overflow-auto rounded-md border border-line bg-sunken px-3 py-2 font-mono text-[11px] leading-4 whitespace-pre text-ink">
+                {JSON.stringify(saved.report, null, 2)}
+              </pre>
+            </Details>
+          </div>
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
 export function SettingsScreen({ connection, navigate }: { connection: ConnectionState; navigate: Navigate }) {
   return (
     <div className="mx-auto flex max-w-[760px] flex-col gap-6 px-page pt-10 pb-24">
       <div>
         <h1 className="text-[22px] font-semibold tracking-tight">設定與診斷</h1>
-        <p className="mt-1 text-ink-2">agent 存取、待處理的請求、中斷的操作、引擎與畫面預覽。</p>
+        <p className="mt-1 text-ink-2">agent 存取、待處理的請求、中斷的操作、引擎、畫面預覽、容量與診斷資訊。</p>
       </div>
       <AgentAccessCard />
       <AgentSetupCard />
@@ -465,13 +646,8 @@ export function SettingsScreen({ connection, navigate }: { connection: Connectio
       <AttentionCard navigate={navigate} />
       <EngineCard connection={connection} />
       <PreviewCard />
-      <Card>
-        <CardHeader
-          title="容量與診斷匯出"
-          description="查看歷史與暫存用量，以及匯出去識別化的診斷資訊。"
-          action={<Badge tone="outline">尚未提供</Badge>}
-        />
-      </Card>
+      <StorageCard />
+      <DiagnosticsCard />
     </div>
   );
 }

@@ -7,6 +7,7 @@ import {
   OperationStatus,
   ProjectId,
   TERMINAL_OPERATION_STATES,
+  type AppAttention,
   type EngineEvent,
 } from '@draft-tide/contracts';
 import fc from 'fast-check';
@@ -187,7 +188,10 @@ describe('operations every channel can follow', () => {
     try {
       ops.requestConnect({ root: '/Users/me/design', name: ' Pricing ', entryFiles: ['a.html', 'a.html'] }, 'mcp');
     } catch (e) {
-      expect(e).toMatchObject({ code: 'CONFIRMATION_REQUIRED', details: { operation: 'project.connect' } });
+      expect(e).toMatchObject({
+        code: 'CONFIRMATION_REQUIRED',
+        details: { operation: 'project.connect', app: 'unavailable' },
+      });
       id = (e as DtError).details['operationId'] as string;
     }
     expect(ops.status(OperationId.parse(id))).toMatchObject({
@@ -197,10 +201,54 @@ describe('operations every channel can follow', () => {
       request: { root: '/Users/me/design', name: 'Pricing', entryFiles: ['a.html'] },
       project: null,
     });
-    expect(events).toEqual([{ name: 'operations.changed' }]);
+    expect(events).toEqual([{ name: 'operations.changed' }, { name: 'request.waiting', operationId: id }]);
     expect(store.operations.size).toBe(1);
     expect(codeOf(() => ops.requestConnect({ root: 'design' }, 'cli'))).toBe('INVALID_ARGUMENT');
     expect(codeOf(() => ops.requestConnect({ root: 'C:\\Users\\me' }, 'cli'))).toBe('CONFIRMATION_REQUIRED');
+  });
+
+  it('brings the app to a request, or says the user has to open it', () => {
+    const store = memoryStore();
+    const ctx = createProjectContext({
+      store,
+      host: noHost,
+      clock: { nowIso: () => new Date().toISOString() },
+      events: { publish: () => undefined },
+    });
+    const answers: (AppAttention | Error)[] = ['shown', 'opening', new Error('spawn failed')];
+    let calls = 0;
+    const ops = createOperationService(ctx, {
+      app: {
+        attend: () => {
+          calls++;
+          const next = answers.shift() ?? 'unavailable';
+          if (next instanceof Error) throw next;
+          return next;
+        },
+      },
+    });
+    const ask = () => {
+      try {
+        ops.requestLogin('mcp');
+      } catch (e) {
+        return e as DtError;
+      }
+      throw new Error('expected CONFIRMATION_REQUIRED');
+    };
+    const shown = ask();
+    expect(shown.details).toMatchObject({ operation: 'auth.login', app: 'shown' });
+    expect(shown.message).toMatch(/waiting in the Draft Tide app, which is open/);
+    expect(ask().details['app']).toBe('opening');
+    // Opening the app is a courtesy: the request stands without it.
+    const failed = ask();
+    expect(failed.code).toBe('CONFIRMATION_REQUIRED');
+    expect(failed.details['app']).toBe('unavailable');
+    expect(failed.message).toMatch(/until the user opens it/);
+    expect(calls).toBe(3);
+    // A request over the limit opens nothing.
+    for (let i = 3; i < MAX_PENDING_REQUESTS; i++) ask();
+    expect(codeOf(() => ops.requestLogin('cli'))).toBe('RESOURCE_BUDGET_EXCEEDED');
+    expect(calls).toBe(MAX_PENDING_REQUESTS);
   });
 
   it('lets the user decline, the requester withdraw, and a bind complete a request, once', () => {

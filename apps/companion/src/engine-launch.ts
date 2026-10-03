@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PREVIEW_HOST_ENV, TEST_GITHUB_ENV } from '@draft-tide/contracts';
+import { APP_LAUNCH_ENV, PREVIEW_HOST_ENV, TEST_GITHUB_ENV } from '@draft-tide/contracts';
 import { packagedLayout, scriptEngineLaunch, type EngineLaunch } from '@draft-tide/engine-client';
 import { BUILD } from './build-info.ts';
 
@@ -30,5 +30,8 @@ export function engineLaunch(): EngineLaunch {
   // And the test GitHub (tests, the desktop E2E).
   const testGitHub = process.env[TEST_GITHUB_ENV];
   if (testGitHub) env[TEST_GITHUB_ENV] = testGitHub;
+  // And the app it opens for a request (a release Engine opens its own).
+  const app = process.env[APP_LAUNCH_ENV];
+  if (app) env[APP_LAUNCH_ENV] = app;
   return scriptEngineLaunch(process.execPath, engineEntry, env);
 }

@@ -34,6 +34,7 @@ import {
   digestFile,
   gitBlobOid,
   inspectPaths,
+  measureTree,
   openWorkspace,
   readProjectConfigFile,
   volumeSpace,
@@ -435,6 +436,37 @@ describe('staging and space', () => {
     const root = tempDir();
     mkdirSync(join(root, '.git'));
     expect((await openWorkspace(root).projectSpace()).volume).toBe(sa.volume);
+  });
+
+  it('measures a tree by part, never through a link, within its budget', async () => {
+    const data = tempDir();
+    const outside = tempDir();
+    put(outside, 'huge.bin', Buffer.alloc(50_000));
+    put(data, 'state.sqlite', Buffer.alloc(4096));
+    put(data, 'state.sqlite-wal', Buffer.alloc(100));
+    put(data, 'projects/p/cache/previews/a.png', Buffer.alloc(300));
+    put(data, 'projects/p/operations/o/staging/x', Buffer.alloc(70));
+    put(data, 'diagnostics/engine.log', 'log line\n');
+    if (!onWindows) {
+      symlinkSync(outside, join(data, 'link'));
+      symlinkSync(join(outside, 'huge.bin'), join(data, 'projects', 'p', 'cache', 'big.png'));
+    }
+    const classify = (s: readonly string[]) =>
+      s[0]?.startsWith('state.sqlite')
+        ? 'database'
+        : s[0] === 'projects' && s[2] === 'cache'
+          ? 'previews'
+          : s[0] === 'projects' && s[2] === 'operations'
+            ? 'staging'
+            : s[0] === 'diagnostics'
+              ? 'logs'
+              : 'other';
+    const m = await measureTree(data, classify);
+    expect(m.complete).toBe(true);
+    expect(Object.fromEntries(m.bytes)).toEqual({ database: 4196, previews: 300, staging: 70, logs: 9 });
+    const cut = await measureTree(data, classify, 3);
+    expect(cut.complete).toBe(false);
+    expect((await measureTree(join(data, 'nothing-here'), classify)).bytes.size).toBe(0);
   });
 });
 

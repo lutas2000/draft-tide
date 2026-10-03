@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import {
+  APP_LAUNCH_ENV,
   PREVIEW_HOST_ENV,
   TEST_GITHUB_ENV,
   errorEnvelope,
@@ -40,6 +41,9 @@ function launch(): EngineLaunch {
       ...(git ? { DRAFT_TIDE_GIT: git } : {}),
       ...(testGitHub ? { [TEST_GITHUB_ENV]: testGitHub } : {}),
       [PREVIEW_HOST_ENV]: JSON.stringify(previewHost()),
+      // What the Engine starts when a request comes and this window is gone:
+      // this same build. A release Engine opens the app it ships in.
+      [APP_LAUNCH_ENV]: JSON.stringify({ command: process.execPath, args: [fileURLToPath(import.meta.url)] }),
     });
   }
   // Release: the Engine executable in the app's resources (packagedLayout).

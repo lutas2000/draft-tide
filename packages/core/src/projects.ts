@@ -61,7 +61,9 @@ export interface ProjectService {
     reviewToken: string;
     asNewProject?: boolean | undefined;
   }): Promise<ProjectBindResult>;
-  status(projectId: ProjectId): Promise<ProjectStatus>;
+  // changes: false skips comparing the folder with the newest commit (no
+  // file is read; changes is null).
+  status(projectId: ProjectId, options?: { changes?: boolean }): Promise<ProjectStatus>;
   restoreSettings(projectId: ProjectId): Promise<SettingsRestored>;
   save(projectId: ProjectId, name: string | undefined, origin: Origin): Promise<SavedSnapshot>;
   history(projectId: ProjectId, page: { skip: number; limit: number }): Promise<HistoryPage>;
@@ -269,7 +271,7 @@ export function createProjectService(ctx: ProjectContext, recovery: RecoveryServ
 
   // ---- status
 
-  async function status(projectId: ProjectId): Promise<ProjectStatus> {
+  async function status(projectId: ProjectId, options: { changes?: boolean } = {}): Promise<ProjectStatus> {
     const p = requireProject(projectId);
     const result: ProjectStatus = {
       project: p,
@@ -328,10 +330,11 @@ export function createProjectService(ctx: ProjectContext, recovery: RecoveryServ
       const [commit] = await repo.readCommits([probe.tip]);
       if (commit) {
         result.tip = historyEntryOf(commit, index);
-        if (config) tipFiles = (await repo.listTree(commit.tree)).entries;
+        if (config && options.changes !== false) tipFiles = (await repo.listTree(commit.tree)).entries;
       }
     }
-    if (!config || probe.blockers.some((b) => b.code === 'REPO_UNSUPPORTED')) return result;
+    if (!config || probe.blockers.some((b) => b.code === 'REPO_UNSUPPORTED') || options.changes === false)
+      return result;
 
     const working = await workingStatus({
       repo,

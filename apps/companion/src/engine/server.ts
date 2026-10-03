@@ -31,6 +31,8 @@ export interface ServerOptions {
 export interface EngineServer extends EventSink {
   readonly server: Server;
   sessionCount(): number;
+  // Desktop sessions past the handshake: the app is open on this data store.
+  desktopSessionCount(): number;
   inFlight(): number;
 }
 
@@ -217,6 +219,7 @@ export function createEngineServer(options: ServerOptions): EngineServer {
       for (const push of desktopSessions) push(frame);
     },
     sessionCount: () => sessions,
+    desktopSessionCount: () => desktopSessions.size,
     inFlight: () => inFlight,
   };
 }

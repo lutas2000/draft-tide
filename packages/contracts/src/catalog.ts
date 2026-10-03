@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DiagnosticsReport, StorageUsage } from './diagnostics.ts';
 import { AgentAccess, EngineInfo, ProjectSummary } from './engine.ts';
 import {
   FileDiff,
@@ -448,6 +449,26 @@ export const OPERATIONS = {
     desktop: true,
     tool: 'agent-access',
     effect: 'write',
+  },
+  // 設定與診斷 (M1 plan §4.1): the app only. The report is de-identified by
+  // its schema; the app saves it where the user chooses.
+  'diagnostics.usage': {
+    summary:
+      "How much room Draft Tide takes: the data directory by part, each project's history, and the free space where each is kept.",
+    input: NoInput,
+    output: StorageUsage,
+    desktop: true,
+    tool: 'none',
+    effect: 'read',
+  },
+  'diagnostics.report': {
+    summary:
+      'A de-identified diagnostics report: versions, storage, each project and operation as a label with its state and error codes, and the end of the Engine log with paths, names and ids replaced.',
+    input: NoInput,
+    output: DiagnosticsReport,
+    desktop: true,
+    tool: 'none',
+    effect: 'read',
   },
   'agentAccess.get': {
     summary: 'Whether external agents may use Draft Tide through the CLI and MCP.',

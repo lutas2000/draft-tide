@@ -29,6 +29,18 @@ export function resolveDataDir(explicit?: string): string {
   return defaultDataDir();
 }
 
+// The desktop app's Chromium profile (Electron's userData: cookies, local
+// storage, caches), a subfolder of the data directory the window uses. It sits
+// beside the Engine's files, never among them, so the diagnostics export can
+// leave it out and removing the data directory removes it too. Electron's
+// single-instance lock lives there, so one app instance runs per data store,
+// as one Engine does.
+export const DESKTOP_PROFILE_DIR = 'desktop';
+
+export function desktopProfileDir(dataDir: string, platform: NodeJS.Platform = process.platform): string {
+  return pathFor(platform).join(dataDir, DESKTOP_PROFILE_DIR);
+}
+
 export interface RuntimePaths {
   runtimeDir: string;
   lockFile: string;

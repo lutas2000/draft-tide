@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Draft Tide's app icon: the GUI's mark (two tide lines on tide-600) on
+       the macOS icon grid (an 824 px rounded square in a 1024 px canvas).
+       scripts/make-icon.ts renders it into icon.icns. -->
+  <defs>
+    <linearGradient id="tide" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b7f88" />
+      <stop offset="1" stop-color="#16555d" />
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.18" />
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.3" />
+    </filter>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tide)" filter="url(#shadow)" />
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#sheen)" />
+  <g fill="none" stroke="#ffffff" stroke-linecap="round" stroke-width="64">
+    <path d="M254.5 447.6c82.4-87.55 164.8-87.55 247.2 0s175.1 87.55 267.8 0" stroke-opacity="0.55" />
+    <path d="M254.5 589.25c82.4-87.55 164.8-87.55 247.2 0s175.1 87.55 267.8 0" />
+  </g>
+</svg>

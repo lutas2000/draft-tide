@@ -1,9 +1,12 @@
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { packagedLayout } from '@draft-tide/engine-client';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_APP_ID, identifiers, readReleaseConfig } from '../scripts/release/config.ts';
 import { payloadSigning } from '../scripts/release/sign.ts';
-import { EXPECTED_FUSES } from '../scripts/release/verify.ts';
+import { EXPECTED_FUSES, iconCheck } from '../scripts/release/verify.ts';
+import { ICNS_TYPES, buildIcns, pngSize, readIcns } from '../scripts/make-icon.ts';
 
 const ENV = {
   DT_APP_VERSION: '0.1.0',
@@ -71,5 +74,42 @@ describe('the fuses', () => {
   it('turn off running as Node, NODE_OPTIONS and inspect, and turn on ASAR integrity', () => {
     expect(Object.values(EXPECTED_FUSES)).toHaveLength(9);
     expect(EXPECTED_FUSES).toMatchObject({ 0: false, 2: false, 3: false, 4: true, 5: true, 7: false });
+  });
+});
+
+describe('the app icon', () => {
+  const icon = join(import.meta.dirname, '..', 'assets', 'icon.icns');
+
+  it('holds a PNG of every size macOS asks for, each its own size', () => {
+    const entries = readIcns(readFileSync(icon));
+    expect(entries.map((e) => e.type)).toEqual(ICNS_TYPES.map((t) => t.type));
+    for (const [i, e] of entries.entries()) {
+      const size = ICNS_TYPES[i]?.size ?? 0;
+      expect(pngSize(e.data), e.type).toEqual({ width: size, height: size });
+    }
+  });
+
+  it('builds and reads back an .icns', () => {
+    const png = readIcns(readFileSync(icon))[0]?.data ?? Buffer.alloc(0);
+    const built = buildIcns([{ type: 'icp4', png }]);
+    expect(readIcns(built)).toEqual([{ type: 'icp4', data: png }]);
+    expect(() => readIcns(Buffer.from('icns\0\0\0\x09x'))).toThrow();
+  });
+
+  it("is what the packaged app's Info.plist names (S8)", () => {
+    const app = mkdtempSync(join(tmpdir(), 'dt-icon-app-'));
+    try {
+      mkdirSync(join(app, 'Contents', 'Resources'), { recursive: true });
+      writeFileSync(
+        join(app, 'Contents', 'Info.plist'),
+        '<plist><dict><key>CFBundleIconFile</key>\n\t<string>electron.icns</string></dict></plist>',
+      );
+      writeFileSync(join(app, 'Contents', 'Resources', 'electron.icns'), 'electron');
+      expect(iconCheck(app, icon).ok).toBe(false);
+      writeFileSync(join(app, 'Contents', 'Resources', 'electron.icns'), readFileSync(icon));
+      expect(iconCheck(app, icon)).toMatchObject({ id: 'S8', ok: true, details: { named: 'electron.icns' } });
+    } finally {
+      rmSync(app, { recursive: true, force: true });
+    }
   });
 });

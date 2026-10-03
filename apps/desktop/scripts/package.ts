@@ -68,6 +68,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const repo = join(root, '..', '..');
 const companion = join(repo, 'apps', 'companion');
 const PRODUCT = 'Draft Tide';
+const APP_ICON = join(root, 'assets', 'icon.icns');
 
 function step(msg: string): void {
   process.stderr.write(`\n== ${msg}\n`);
@@ -238,6 +239,8 @@ async function main(): Promise<void> {
     appVersion: config.appVersion,
     buildVersion: config.appVersion,
     appCategoryType: 'public.app-category.productivity',
+    // Draft Tide's icon (scripts/make-icon.ts), in place of Electron's.
+    icon: APP_ICON,
     darwinDarkModeSupport: true,
     asar: true,
     prune: false,
@@ -266,7 +269,7 @@ async function main(): Promise<void> {
 
   step('checks');
   const checks = [
-    ...staticChecks(app, { teamId: config.teamId, ids: config.ids, desktopRequirement }),
+    ...staticChecks(app, { teamId: config.teamId, ids: config.ids, desktopRequirement, icon: APP_ICON }),
     await fuseCheck(app),
     ...(await runtimeChecks(app, { appVersion: config.appVersion, githubConfigured: true })),
     ...(await previewHostChecks(app, { renderer, desktopRequirement, previewHostId: config.ids.previewHost })),

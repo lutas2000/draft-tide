@@ -1,6 +1,8 @@
 import type {
   AgentAccess,
+  AppAttention,
   CommitIdentity,
+  DataStorePart,
   DesktopIdentityMode,
   EngineEvent,
   EngineInstanceId,
@@ -228,6 +230,38 @@ export interface CorePorts {
   previews?: PreviewPorts;
   // Without it sign-in is unavailable and projects can't be synced.
   remote?: RemoteProvider;
+  // Without it the data directory's use, free space and the Engine log are
+  // left out of 設定與診斷.
+  diagnostics?: DiagnosticsHost;
+  // Without it a request only waits in the app (details.app: unavailable).
+  app?: DesktopApp;
+}
+
+// ---- 設定與診斷 (M1 plan §4.1, implemented by the Engine)
+
+export interface DiagnosticsHost {
+  // Bytes under the data directory by part, never following a link.
+  // complete: false when the walk stopped at its budget.
+  dataStoreUsage(): Promise<{ parts: Record<DataStorePart, number>; complete: boolean }>;
+  dataStoreSpace(): Promise<VolumeSpace>;
+  // The end of the Engine's log: whole lines, at most maxBytes.
+  logTail(maxBytes: number): Promise<{ text: string; truncated: boolean }>;
+  // The OS release and the version of the Git the Engine runs.
+  environment(): Promise<{ osRelease: string; git: string | null }>;
+  // What a report must never quote, beyond what core knows (folders,
+  // project names, GitHub accounts): the data, home and temporary
+  // directories, the user's and the computer's names.
+  privateValues(): { paths: string[]; words: string[] };
+}
+
+// ---- The desktop app (M1 plan §5: a request opens the app's screen for it)
+
+export interface DesktopApp {
+  // Called once a request is recorded (and request.waiting published). An
+  // app that is open comes forward on the event (shown); one that isn't is
+  // started (opening) unless this Engine can't (unavailable). Never waits
+  // for the app, and never decides anything for the user.
+  attend(): AppAttention;
 }
 
 // ---- GitHub (M1 plan §10, implemented by @draft-tide/remote-github)
@@ -486,6 +520,9 @@ export interface GitRepo {
   checkAttributes(paths: readonly string[], signal?: AbortSignal): Promise<Map<string, PathAttributes>>;
   // The subset of these blob ids already in the object store.
   existingBlobs(oids: readonly GitOid[], signal?: AbortSignal): Promise<Set<GitOid>>;
+  // Bytes the object store takes (loose objects, packs and garbage): what
+  // the history costs on disk.
+  objectStoreSize(signal?: AbortSignal): Promise<number>;
 }
 
 // ---- Git: objects, the index and the branch ref (implemented by @draft-tide/git-backend)

@@ -12,7 +12,8 @@
     "start": "node scripts/build.ts && electron .",
     "dev": "node scripts/dev.ts",
     "test:e2e": "node scripts/build.ts --e2e && vitest run --config vitest.e2e.config.ts",
-    "package": "node scripts/package.ts"
+    "package": "node scripts/package.ts",
+    "icon": "node scripts/make-icon.ts"
   },
   "dependencies": {
     "@draft-tide/contracts": "workspace:*",

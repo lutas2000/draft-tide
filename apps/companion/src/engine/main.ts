@@ -24,6 +24,8 @@ import { resolveDataDir, runtimePaths } from '@draft-tide/engine-client';
 import { sweepNetworkDirs } from '@draft-tide/git-backend';
 import { openLocalStore, tryAcquireEngineLock } from '@draft-tide/local-store';
 import { BUILD } from '../build-info.ts';
+import { createDesktopApp, desktopAppStarter } from './desktop-app.ts';
+import { LOG_DIR, createDiagnosticsHost } from './diagnostics.ts';
 import { createEngineGitHub } from './github.ts';
 import { createProjectHost, engineGitRuntime, networkTmpDir } from './host.ts';
 import { createPeerVerifier } from './peer-identity.ts';
@@ -39,8 +41,8 @@ async function main(): Promise<void> {
   const IDLE_MS = Math.max(200, Number(process.env['DRAFT_TIDE_ENGINE_IDLE_MS'] ?? 30_000) || 30_000);
 
   // Diagnostics hold no design content, tokens or secrets.
-  mkdirSync(join(dataDir, 'diagnostics'), { recursive: true, mode: 0o700 });
-  const logFile = join(dataDir, 'diagnostics', 'engine.log');
+  mkdirSync(join(dataDir, LOG_DIR), { recursive: true, mode: 0o700 });
+  const logFile = join(dataDir, LOG_DIR, 'engine.log');
   function log(msg: string): void {
     const line = `${new Date().toISOString()} [engine ${process.pid} ${instanceId.slice(0, 8)}] ${msg}\n`;
     process.stderr.write(line);
@@ -94,6 +96,16 @@ async function main(): Promise<void> {
   const previewLaunch = previewHostLaunch(BUILD);
   const previewSupervisor = createPreviewSupervisor({ launch: previewLaunch, timezone, log });
   if (!previewLaunch) log('no Preview Host: previews are unavailable');
+  // A request only the user answers opens the app (M1 plan §5): the app of
+  // this installation, or what a development launcher named.
+  const appStarter = desktopAppStarter(BUILD);
+  if (!appStarter && BUILD.mode === 'release') log('no app to open: requests wait until the user opens it');
+  const app = createDesktopApp({
+    starter: appStarter,
+    dataDir,
+    desktopSessions: () => server?.desktopSessionCount() ?? 0,
+    log,
+  });
   const toolToken = randomBytes(32).toString('base64url');
   const startedAt = new Date().toISOString();
   let server: EngineServer | null = null;
@@ -133,6 +145,8 @@ async function main(): Promise<void> {
       }),
       previews: { renderer: previewSupervisor, images: createPreviewImageStore(dataDir), timezone },
       remote,
+      diagnostics: createDiagnosticsHost({ dataDir, logFile, git }),
+      app,
     },
     testHooks ? { testHooks } : {},
   );

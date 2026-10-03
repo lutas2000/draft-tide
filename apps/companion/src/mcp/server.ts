@@ -33,7 +33,8 @@ Call engine_info first. If agentAccess.enabled is false, every other tool return
 ask the user to turn on agent access in the Draft Tide app (設定與診斷 / Settings). You cannot turn it on yourself.
 Use project_list to find the project the user means; never guess a folder. Only the user connects a new folder:
 project_connect_request asks them in the app and answers CONFIRMATION_REQUIRED with details.operationId; follow it
-with operation_status until it is completed (the project is in the result), denied or cancelled.
+with operation_status until it is completed (the project is in the result), denied or cancelled. details.app says
+whether the app came forward (shown), is opening (opening), or the user must open it (unavailable).
 project_status shows unsaved changes; stop writing files before snapshot_create.
 snapshot_create answers NO_CHANGES (not an error) when the folder equals the newest version.
 history_list gives snapshot ids (permanent) and commit ids; snapshot_diff and snapshot_diff_file compare two of them.
