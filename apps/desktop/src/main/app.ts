@@ -18,7 +18,8 @@ import {
   type IpcMainInvokeEvent,
 } from 'electron';
 import { DtError, OPERATIONS, errorEnvelope, isOperationName, isSingleLine } from '@draft-tide/contracts';
-import { IPC, type ConnectionState } from '../shared/bridge.ts';
+import { defaultDataDir, resolveDataDir } from '@draft-tide/engine-client';
+import { IPC, type AgentSetup, type ConnectionState } from '../shared/bridge.ts';
 import { BUILD } from './build-info.ts';
 import { DesktopEngine } from './engine.ts';
 
@@ -40,6 +41,28 @@ const GUI_CSP = [
 let win: BrowserWindow | null = null;
 let engine: DesktopEngine;
 const isGuiUrl = (url: string) => url.startsWith(GUI_ROOT_URL);
+
+// Where this installation's CLI, MCP server and Skill are (M1 plan §4.1). The
+// CLI and MCP server run on the companion Node; the Skill folder ships beside
+// them (in the repository for development builds, in the app's resources from
+// M1-09). A data directory other than the default is passed as --data-dir, so
+// an agent reaches the same Engine as this window.
+function agentSetup(): AgentSetup {
+  const resources = () => process.resourcesPath;
+  const command = BUILD.companion
+    ? BUILD.companion.nodePath
+    : join(resources(), 'node', 'bin', process.platform === 'win32' ? 'node.exe' : 'node');
+  const cli = BUILD.companion ? BUILD.companion.cliEntry : join(resources(), 'companion', 'cli.mjs');
+  const skillDir = BUILD.companion ? BUILD.companion.skillDir : join(resources(), 'skills', 'draft-tide');
+  const dataDir = resolveDataDir();
+  const custom = dataDir !== defaultDataDir();
+  return {
+    command,
+    args: custom ? [cli, '--data-dir', dataDir] : [cli],
+    skillDir: existsSync(join(skillDir, 'SKILL.md')) ? skillDir : null,
+    dataDir: custom ? dataDir : null,
+  };
+}
 
 export function runApp(): void {
   engine = new DesktopEngine({
@@ -124,13 +147,14 @@ export function runApp(): void {
     await shell.openExternal(parsed.href);
     return true;
   });
-  // The sign-in code: short, one line. (The page's own clipboard access is
-  // denied with every other permission.)
+  // Text the app composed: the sign-in code, a CLI or MCP setup snippet.
+  // (The page's own clipboard access is denied with every other permission.)
   ipcMain.handle(IPC.copyText, (event, text: unknown) => {
-    if (!trusted(event) || typeof text !== 'string' || text.length > 64 || !isSingleLine(text)) return false;
+    if (!trusted(event) || typeof text !== 'string' || text.length > 8192) return false;
     void clipboard.writeText(text);
     return true;
   });
+  ipcMain.handle(IPC.agentSetup, (event) => (trusted(event) ? agentSetup() : null));
   ipcMain.handle(IPC.connectionState, (event) => (trusted(event) ? engine.state : null));
   ipcMain.handle(IPC.reconnect, async (event) => {
     if (!trusted(event)) return null;

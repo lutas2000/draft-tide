@@ -12,6 +12,20 @@ export interface BridgeEvent {
   gap: boolean;
 }
 
+// How an agent host reaches this installation's CLI and MCP server, and
+// where the Skill is (M1 plan §4.1, 設定 / 診斷). Facts of the build and the
+// data directory only; nothing here grants access, which stays the switch.
+export interface AgentSetup {
+  // The companion Node and the CLI bundle: `command args… <subcommand>`.
+  // With a data directory other than the default, args carry --data-dir.
+  command: string;
+  args: string[];
+  // The folder holding SKILL.md, or null when this build has none.
+  skillDir: string | null;
+  // The data directory, when it isn't the platform default.
+  dataDir: string | null;
+}
+
 export interface DraftTideBridge {
   invoke(op: string, payload: unknown): Promise<Envelope<unknown>>;
   // The native folder picker. A folder chosen here (and only one chosen here)
@@ -22,8 +36,10 @@ export interface DraftTideBridge {
   // Opens a GitHub page in the user's browser (signing in, creating a repo,
   // installing the app). Only https://github.com/ pages; false otherwise.
   openExternal(url: string): Promise<boolean>;
-  // Puts a short single line (the sign-in code) on the clipboard.
+  // Puts text the app composed (the sign-in code, a setup snippet) on the
+  // clipboard.
   copyText(text: string): Promise<boolean>;
+  agentSetup(): Promise<AgentSetup | null>;
   connectionState(): Promise<ConnectionState>;
   reconnect(): Promise<ConnectionState>;
   onEvent(listener: (e: BridgeEvent) => void): () => void;
@@ -35,6 +51,7 @@ export const IPC = {
   chooseFolder: 'dt:choose-folder',
   openExternal: 'dt:open-external',
   copyText: 'dt:copy-text',
+  agentSetup: 'dt:agent-setup',
   connectionState: 'dt:connection-state',
   reconnect: 'dt:reconnect',
   event: 'dt:event',

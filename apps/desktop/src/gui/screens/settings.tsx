@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, type ReactNode } from 'react';
 import type { OperationStatus } from '@draft-tide/contracts';
 import type { ConnectionState } from '../../shared/bridge.ts';
@@ -24,7 +24,7 @@ import {
   useProjects,
   useSetAgentAccess,
 } from '../lib/engine-state.ts';
-import { engineCall } from '../lib/bridge.ts';
+import { agentSetup, copyText, engineCall } from '../lib/bridge.ts';
 import { formatBytes, formatWhen, shortId } from '../lib/format.ts';
 import { usePreviewStatus, previewStatusKey } from '../lib/preview.ts';
 import type { Navigate } from '../lib/route.ts';
@@ -92,6 +92,99 @@ function AgentAccessCard() {
           <li>連接新資料夾、登入 GitHub、連接遠端與第一次推送，仍然只能由你在這裡完成。</li>
         </ul>
       </ConfirmDialog>
+    </Card>
+  );
+}
+
+// A POSIX shell word: as the user would type it in a terminal.
+function shellWord(s: string): string {
+  return /^[A-Za-z0-9_/.:=@%+-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  return (
+    <Button
+      size="sm"
+      variant="secondary"
+      aria-label={label}
+      onClick={() => {
+        void copyText(text).then((ok) => {
+          setState(ok ? 'copied' : 'failed');
+          setTimeout(() => setState('idle'), 1500);
+        });
+      }}
+    >
+      {state === 'copied' ? '已複製' : state === 'failed' ? '無法複製' : '複製'}
+    </Button>
+  );
+}
+
+function Snippet({ text, label }: { text: string; label: string }) {
+  return (
+    <div className="flex items-start gap-3">
+      <pre className="min-w-0 flex-1 overflow-x-auto rounded-md border border-line bg-sunken px-3 py-2 font-mono text-[12px] leading-5 text-ink whitespace-pre">
+        {text}
+      </pre>
+      <CopyButton text={text} label={label} />
+    </div>
+  );
+}
+
+// Where this installation's CLI, MCP server and Skill are, ready to paste
+// into an agent host (M1 plan §4.1). It tells where things are; agent access
+// stays the only thing that lets an agent in.
+function AgentSetupCard() {
+  const setup = useQuery({ queryKey: ['agentSetup'], queryFn: agentSetup, staleTime: Infinity });
+  const s = setup.data;
+  if (!s) return null;
+  const cliLine = [s.command, ...s.args].map(shellWord).join(' ');
+  const mcpConfig = JSON.stringify(
+    { mcpServers: { 'draft-tide': { command: s.command, args: [...s.args, 'mcp', 'serve'] } } },
+    null,
+    2,
+  );
+  return (
+    <Card aria-label="CLI / MCP / Skill 設定">
+      <CardHeader
+        title="CLI / MCP / Skill 設定"
+        description="給 agent 宿主（例如 Claude Code）的設定。它們都連到這個 Draft Tide 引擎，只有在上面開啟 agent 存取後才能操作專案。"
+      />
+      <CardBody className="flex flex-col gap-4">
+        <div>
+          <p className="mb-1.5 text-[13px] font-medium text-ink">命令列工具</p>
+          <p className="mb-2 text-[12px] text-ink-3">
+            在後面接上子命令，例如 <span className="font-mono">--json project list</span>。
+          </p>
+          <Snippet text={cliLine} label="複製 CLI 指令" />
+        </div>
+        <div>
+          <p className="mb-1.5 text-[13px] font-medium text-ink">MCP server</p>
+          <p className="mb-2 text-[12px] text-ink-3">
+            貼到宿主的 MCP 設定（Claude Code、Claude Desktop、Cursor 等都用這個格式）。只在 Claude Code 實測過。
+          </p>
+          <Snippet text={mcpConfig} label="複製 MCP 設定" />
+        </div>
+        <div>
+          <p className="mb-1.5 text-[13px] font-medium text-ink">Skill</p>
+          {s.skillDir ? (
+            <>
+              <p className="mb-2 text-[12px] text-ink-3">
+                把這個資料夾複製（或連結）到宿主的 skills 資料夾，例如{' '}
+                <span className="font-mono">~/.claude/skills/draft-tide</span>。
+              </p>
+              <Snippet text={s.skillDir} label="複製 Skill 路徑" />
+            </>
+          ) : (
+            <p className="text-[12px] text-ink-3">這個版本沒有附 Skill。</p>
+          )}
+        </div>
+        {s.dataDir && (
+          <p className="text-[12px] text-ink-3">
+            這個視窗使用的資料目錄不是預設位置（{s.dataDir}），所以指令帶著 --data-dir。
+          </p>
+        )}
+      </CardBody>
     </Card>
   );
 }
@@ -367,6 +460,7 @@ export function SettingsScreen({ connection, navigate }: { connection: Connectio
         <p className="mt-1 text-ink-2">agent 存取、待處理的請求、中斷的操作、引擎與畫面預覽。</p>
       </div>
       <AgentAccessCard />
+      <AgentSetupCard />
       <RequestsCard navigate={navigate} />
       <AttentionCard navigate={navigate} />
       <EngineCard connection={connection} />

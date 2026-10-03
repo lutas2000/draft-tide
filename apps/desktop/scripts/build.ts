@@ -16,6 +16,8 @@ import type { DesktopBuildInfo } from '../src/main/build-info.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const companionEngine = join(root, '..', 'companion', 'dist', 'engine.mjs');
+const companionCli = join(root, '..', 'companion', 'dist', 'cli.mjs');
+const skillDir = join(root, '..', '..', 'skills', 'draft-tide');
 
 export interface DesktopBuildOptions {
   mode: 'development' | 'e2e';
@@ -32,7 +34,7 @@ export async function buildDesktop(options: DesktopBuildOptions): Promise<string
     mode: options.mode,
     appVersion: process.env['DT_APP_VERSION'] ?? '0.0.0-dev',
     guiDevUrl: options.guiDevUrl ?? null,
-    companion: { nodePath: process.execPath, engineEntry: companionEngine },
+    companion: { nodePath: process.execPath, engineEntry: companionEngine, cliEntry: companionCli, skillDir },
     allowDebugSwitches: options.mode === 'e2e',
   };
   for (const part of ['main', 'preload']) rmSync(join(outDir, part), { recursive: true, force: true });

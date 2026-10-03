@@ -122,6 +122,7 @@ describe('desktop app', () => {
       require: 'undefined',
       process: 'undefined',
       bridge: [
+        'agentSetup',
         'chooseFolder',
         'connectionState',
         'copyText',
@@ -283,6 +284,26 @@ describe('the first manual flow (M1-04)', () => {
     await page.getByText('<p>Yearly plans</p>').waitFor();
     await page.getByText('+1 行').waitFor();
     await page.screenshot({ path: join(shots, 'compare.png') });
+  });
+
+  it('shows where the CLI, MCP server and Skill are, ready to paste', async () => {
+    await nav('設定與診斷').click();
+    const card = page.getByRole('region', { name: 'CLI / MCP / Skill 設定' });
+    await card.getByText('命令列工具').waitFor();
+    // The CLI line names this build's companion and this window's data
+    // directory, so an agent reaches the same Engine.
+    const cliLine = await card.locator('pre').first().innerText();
+    expect(cliLine).toContain(companionCli);
+    expect(cliLine).toContain('--data-dir');
+    await card.getByRole('button', { name: '複製 MCP 設定' }).click();
+    await card.getByText('已複製').waitFor();
+    const copied = await app.evaluate(({ clipboard }) => clipboard.readText());
+    const config = JSON.parse(copied) as { mcpServers: { 'draft-tide': { command: string; args: string[] } } };
+    expect(config.mcpServers['draft-tide'].command).toBe(process.execPath);
+    expect(config.mcpServers['draft-tide'].args).toEqual([companionCli, '--data-dir', dataDir, 'mcp', 'serve']);
+    const skill = await card.locator('pre').nth(2).innerText();
+    expect(existsSync(join(skill, 'SKILL.md'))).toBe(true);
+    await page.screenshot({ path: join(shots, 'settings-agent-setup.png') });
   });
 
   it('gives the CLI the same project, history and diff once agent access is on', async () => {
