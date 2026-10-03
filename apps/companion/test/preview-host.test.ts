@@ -4,15 +4,32 @@
 // source answers, and turns every misbehaviour into PREVIEW_FAILED with the
 // host stopped. The real Electron host runs in the desktop E2E.
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { DtError, PREVIEW_HOST_ENV, ProjectId, previewRendererId, type PreviewHostLaunch } from '@draft-tide/contracts';
 import type { PreviewFileSource, RenderJob, ServedFile } from '@draft-tide/core';
+import { packagedLayout } from '@draft-tide/engine-client';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { BuildInfo } from '../src/build-info.ts';
 import { createPreviewSupervisor, previewHostLaunch, type PreviewSupervisor } from '../src/engine/preview-host.ts';
 import { COMPANION } from './helpers.ts';
 
 const NO_GITHUB = { clientId: null, appSlug: null };
+const DEVELOPMENT: BuildInfo = {
+  mode: 'development',
+  appVersion: '0',
+  desktopRequirement: null,
+  github: NO_GITHUB,
+  previewRenderer: null,
+};
+const release = (previewRenderer: string | null): BuildInfo => ({
+  mode: 'release',
+  appVersion: '1',
+  desktopRequirement: 'x',
+  github: NO_GITHUB,
+  previewRenderer,
+});
 
 const FAKE_HOST = join(COMPANION, 'test', 'fake-preview-host.ts');
 const RENDERER = previewRendererId('1.0.0', '2.0.0');
@@ -201,31 +218,47 @@ describe('the preview supervisor', () => {
     expect(Date.now() - started).toBeLessThan(2_000);
   });
 
-  it('has no renderer without a launch, and none in a release build', async () => {
+  it('has no renderer without a launch', async () => {
     const s = supervisor(null);
     expect(s.rendererId).toBeNull();
     expect(await failure(s.render(job(), source('x'), new AbortController().signal))).toMatchObject({
       details: { reason: 'no-renderer' },
     });
+  });
+
+  it('takes a development launch from the environment, checked strictly', () => {
     const env = { [PREVIEW_HOST_ENV]: JSON.stringify(launch()) };
-    expect(
-      previewHostLaunch({ mode: 'development', appVersion: '0', desktopRequirement: null, github: NO_GITHUB }, env),
-    ).toEqual(launch());
-    expect(
-      previewHostLaunch({ mode: 'release', appVersion: '1', desktopRequirement: 'x', github: NO_GITHUB }, env),
-    ).toBeNull();
+    expect(previewHostLaunch(DEVELOPMENT, env)).toEqual(launch());
     for (const bad of [
       '{',
       '{"command":"node","args":[],"renderer":"r"}',
       '{"command":"/n","args":[],"renderer":"r","x":1}',
     ]) {
-      expect(
-        previewHostLaunch(
-          { mode: 'development', appVersion: '0', desktopRequirement: null, github: NO_GITHUB },
-          { [PREVIEW_HOST_ENV]: bad },
-        ),
-        bad,
-      ).toBeNull();
+      expect(previewHostLaunch(DEVELOPMENT, { [PREVIEW_HOST_ENV]: bad }), bad).toBeNull();
+    }
+  });
+
+  it('starts the Preview Host of its own app in a release build, never one from the environment', () => {
+    const app = mkdtempSync(join(tmpdir(), 'dt-layout-'));
+    try {
+      const resources = join(app, 'Contents', 'Resources');
+      const layout = packagedLayout(resources);
+      const engine = { sea: true, execPath: layout.engine };
+      const env = { [PREVIEW_HOST_ENV]: JSON.stringify(launch()) };
+      // Not packaged yet: no Preview Host.
+      expect(previewHostLaunch(release(RENDERER), env, engine)).toBeNull();
+      mkdirSync(dirname(layout.previewHost), { recursive: true });
+      writeFileSync(layout.previewHost, '');
+      expect(previewHostLaunch(release(RENDERER), env, engine)).toEqual({
+        command: layout.previewHost,
+        args: [],
+        renderer: RENDERER,
+      });
+      // No renderer compiled in, or not running as the packaged Engine.
+      expect(previewHostLaunch(release(null), env, engine)).toBeNull();
+      expect(previewHostLaunch(release(RENDERER), env, { ...engine, sea: false })).toBeNull();
+    } finally {
+      rmSync(app, { recursive: true, force: true });
     }
   });
 });

@@ -41,20 +41,22 @@ describe('the release configuration', () => {
     ).toEqual({ clientId: 'Iv23abcdefgh', appSlug: 'draft-tide' });
   });
 
-  it('gives the Engine, the companion Node and Git identifiers other than the app', () => {
+  it('gives the Preview Host, the Engine, the companion Node and Git identifiers other than the app', () => {
     const ids = identifiers('app.example.desktop');
-    const others = [ids.engine, ids.node, ids.git, ids.gitRemoteHttps];
+    const others = [ids.previewHost, ids.engine, ids.node, ids.git, ids.gitRemoteHttps];
     expect(new Set(others).size).toBe(others.length);
     for (const id of others) expect(id).not.toBe(ids.app);
   });
 });
 
 describe('signing the payload', () => {
-  it('covers the executables of the packaged layout, with JIT only for the Node and the Engine', () => {
-    const resources = '/R';
-    const layout = packagedLayout(resources, 'darwin');
-    const signing = payloadSigning(identifiers('app.example.desktop'));
-    const rel = (p: string) => relative(resources, p);
+  it('covers the executables of the packaged layout, with JIT only for the Preview Host, the Node and the Engine', () => {
+    const contents = '/A.app/Contents';
+    const layout = packagedLayout(join(contents, 'Resources'), 'darwin');
+    const ids = identifiers('app.example.desktop');
+    const signing = payloadSigning(ids);
+    const rel = (p: string) => relative(contents, p);
+    expect(signing.get(rel(layout.previewHost))).toEqual({ identifier: ids.previewHost, jit: true });
     expect(signing.get(rel(layout.node))).toMatchObject({ jit: true });
     expect(signing.get(rel(layout.engine))).toMatchObject({ jit: true });
     expect(signing.get(rel(layout.git))).toMatchObject({ jit: false });

@@ -11,28 +11,41 @@
 //
 // Steps (scripts/release/ holds each part):
 //  1. the companion in release mode: cli.mjs and the Engine SEA (the desktop
-//     requirement compiled in), from the Node running this script, which also
-//     ships as the companion Node;
+//     requirement and the Preview Host's renderer compiled in), from the Node
+//     running this script, which also ships as the companion Node;
 //  2. the desktop app in release mode (dist-release/), staged as a clean app
 //     directory: no node_modules, nothing but Main, preload and the GUI;
 //  3. @electron/packager: the app bundle with an asar (integrity recorded);
-//  4. the payload into Contents/Resources (engine-client's packagedLayout):
+//  4. the Preview Host (a copy of the app's executable, Contents/MacOS) and
+//     the payload into Contents/Resources (engine-client's packagedLayout):
 //     node/, companion/, engine/, git/, skills/, licenses/;
 //  5. the fuses;
 //  6. Developer ID signing, inside out (release/sign.ts);
-//  7. checks: static and runtime (release/verify.ts);
+//  7. checks: static and runtime, the Preview Host's included
+//     (release/verify.ts);
 //  8. notarization and stapling of the app; the GPL sources asset; the disk
 //     image (signed, notarized, stapled); Gatekeeper's verdict on both.
 // Without DT_NOTARY_PROFILE, step 8 stops after a signed disk image, which
 // is not a release artifact (Gatekeeper rejects it once downloaded).
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FuseVersion, flipFuses } from '@electron/fuses';
 import { packager } from '@electron/packager';
+import { previewRendererId } from '@draft-tide/contracts';
 import { packagedLayout } from '@draft-tide/engine-client';
 import { releaseRequirement } from '../../companion/scripts/build.ts';
 import { buildDesktop } from './build.ts';
@@ -41,7 +54,15 @@ import { assembleGit, gplSourcesName, writeGplSources } from './release/git.ts';
 import { makeDmg, notarize, notarizeApp, staple } from './release/notarize.ts';
 import { writeThirdPartyNotices } from './release/notices.ts';
 import { dmgSignArgs, signApp } from './release/sign.ts';
-import { EXPECTED_FUSES, fuseCheck, gatekeeper, printChecks, runtimeChecks, staticChecks } from './release/verify.ts';
+import {
+  EXPECTED_FUSES,
+  fuseCheck,
+  gatekeeper,
+  previewHostChecks,
+  printChecks,
+  runtimeChecks,
+  staticChecks,
+} from './release/verify.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const repo = join(root, '..', '..');
@@ -77,13 +98,29 @@ function preflight(config: ReleaseConfig): void {
     process.stderr.write('warning: DT_NOTARY_PROFILE is not set; the result is signed but not notarized\n');
 }
 
-function buildCompanion(config: ReleaseConfig): void {
+// The renderer the packaged Preview Host reports (the Electron the packager
+// uses), compiled into the Engine so previews are cached under it before the
+// first render. R4 checks the packaged host reports exactly this.
+function previewRenderer(electronVersion: string): string {
+  const binary = createRequire(join(root, 'package.json'))('electron') as string;
+  const r = spawnSync(binary, ['-p', 'process.versions.electron + " " + process.versions.chrome'], {
+    env: { ELECTRON_RUN_AS_NODE: '1' },
+    encoding: 'utf8',
+  });
+  const [electron, chromium] = r.stdout.trim().split(' ');
+  if (r.status !== 0 || electron !== electronVersion || !chromium || !/^[0-9.]+$/.test(chromium))
+    throw new Error(`could not read Electron ${electronVersion}'s Chromium version: ${r.stderr.trim().slice(0, 300)}`);
+  return previewRendererId(electron, chromium);
+}
+
+function buildCompanion(config: ReleaseConfig, renderer: string): void {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     DT_BUILD_MODE: 'release',
     DT_DESKTOP_APP_ID: config.ids.app,
     DT_TEAM_ID: config.teamId,
     DT_APP_VERSION: config.appVersion,
+    DT_PREVIEW_RENDERER: renderer,
   };
   env['DT_GITHUB_CLIENT_ID'] = config.github.clientId;
   env['DT_GITHUB_APP_SLUG'] = config.github.appSlug;
@@ -114,6 +151,20 @@ function stageApp(built: string, stage: string, config: ReleaseConfig): void {
       2,
     )}\n`,
   );
+}
+
+// The Preview Host: the app's own executable (Electron's stub), copied beside
+// it so Electron resolves the same framework, helpers and app.asar (with its
+// integrity check) for it; signing gives it its own identifier (sign.ts), and
+// Main runs only the Preview Host in it. A nested helper app doesn't work:
+// Electron's helper executable won't run a browser process, and a stub in a
+// nested bundle finds no helpers and would skip the asar integrity check
+// (M1-09 record).
+function addPreviewHost(app: string): string {
+  const layout = packagedLayout(join(app, 'Contents', 'Resources'));
+  copyFileSync(join(app, 'Contents', 'MacOS', PRODUCT), layout.previewHost);
+  chmodSync(layout.previewHost, 0o755);
+  return layout.previewHost;
 }
 
 // The payload, in the layout every component looks for (packagedLayout).
@@ -164,9 +215,10 @@ async function main(): Promise<void> {
   const electronVersion = (JSON.parse(readFileSync(join(electronDir(), 'package.json'), 'utf8')) as { version: string })
     .version;
   const desktopRequirement = releaseRequirement(config.ids.app, config.teamId);
+  const renderer = previewRenderer(electronVersion);
 
-  step('companion (release): CLI and Engine SEA');
-  buildCompanion(config);
+  step(`companion (release): CLI and Engine SEA (Preview Host: ${renderer})`);
+  buildCompanion(config, renderer);
 
   step('desktop (release)');
   const built = await buildDesktop({ mode: 'release', appVersion: config.appVersion });
@@ -196,7 +248,8 @@ async function main(): Promise<void> {
   const app = join(appDir, `${PRODUCT}.app`);
   rmSync(stage, { recursive: true, force: true });
 
-  step('payload: companion Node, CLI, Engine, Git, Skill, licenses');
+  step('Preview Host and payload: companion Node, CLI, Engine, Git, Skill, licenses');
+  addPreviewHost(app);
   const payload = addPayload(app, join(root, '.cache'), config.appVersion);
 
   step('fuses');
@@ -216,6 +269,7 @@ async function main(): Promise<void> {
     ...staticChecks(app, { teamId: config.teamId, ids: config.ids, desktopRequirement }),
     await fuseCheck(app),
     ...(await runtimeChecks(app, { appVersion: config.appVersion, githubConfigured: true })),
+    ...(await previewHostChecks(app, { renderer, desktopRequirement, previewHostId: config.ids.previewHost })),
   ];
   if (!printChecks(checks)) throw new Error('release checks failed; nothing was notarized');
 
@@ -254,7 +308,7 @@ async function main(): Promise<void> {
     teamId: config.teamId,
     desktopRequirement,
     githubApp: config.github,
-    runtime: { electron: electronVersion, node: process.version, git: payload.git },
+    runtime: { electron: electronVersion, previewRenderer: renderer, node: process.version, git: payload.git },
     thirdPartyPackages: payload.notices,
     notarized,
     gatekeeper: { app: appGate, dmg: dmgGate },

@@ -16,8 +16,8 @@
 //                       companion's RELEASE_GITHUB_APP)
 //
 // The identifiers are part of the security model (CLAUDE.md "Desktop
-// identity"): the desktop app, the Engine and the companion Node each have
-// their own, under one team. The Engine's identifier is also what its
+// identity"): the desktop app, the Engine, the companion Node and the Preview
+// Host each have their own, under one team. The Engine's identifier is also what its
 // keychain item trusts, so changing it loses every signed-in user's token;
 // the app's is compiled into the Engine as the desktop requirement.
 import { RELEASE_GITHUB_APP } from '../../../companion/src/build-info.ts';
@@ -26,6 +26,9 @@ export const DEFAULT_APP_ID = 'app.drafttide.desktop';
 
 export interface ReleaseIdentifiers {
   app: string;
+  // The Preview Host executable: the app's executable under another
+  // identifier, so the desktop requirement never admits it.
+  previewHost: string;
   engine: string;
   node: string;
   git: string;
@@ -47,6 +50,7 @@ export interface ReleaseConfig {
 export function identifiers(appId: string): ReleaseIdentifiers {
   return {
     app: appId,
+    previewHost: `${appId}.preview-host`,
     engine: `${appId}.engine`,
     node: `${appId}.companion-node`,
     git: `${appId}.git`,

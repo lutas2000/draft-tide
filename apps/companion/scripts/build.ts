@@ -10,6 +10,7 @@
 //   node scripts/build.ts [--sea]         development build
 //   DT_BUILD_MODE=release DT_DESKTOP_APP_ID=<bundle id> DT_TEAM_ID=<team> \
 //     DT_APP_VERSION=<semver> [DT_GITHUB_CLIENT_ID=<id> DT_GITHUB_APP_SLUG=<slug>] \
+//     [DT_PREVIEW_RENDERER="electron/<version> chromium/<version>"] \
 //     node scripts/build.ts
 //
 // The release requirement is the Developer ID form verified in the
@@ -46,6 +47,7 @@ function buildInfo(): BuildInfo {
       appVersion: process.env['DT_APP_VERSION'] ?? '0.0.0-dev',
       desktopRequirement: null,
       github: { ...DEV_GITHUB_APP },
+      previewRenderer: null,
     };
   if (mode !== 'release') throw new Error(`unknown DT_BUILD_MODE: ${mode}`);
   // Windows and Linux have no verified desktop identity yet (CLAUDE.md).
@@ -63,11 +65,17 @@ function buildInfo(): BuildInfo {
     throw new Error('set both DT_GITHUB_CLIENT_ID and DT_GITHUB_APP_SLUG');
   if (clientId !== null && !/^[A-Za-z0-9.]{8,64}$/.test(clientId)) throw new Error(`invalid client id: ${clientId}`);
   if (appSlug !== null && !/^[a-z0-9-]{1,100}$/.test(appSlug)) throw new Error(`invalid app slug: ${appSlug}`);
+  // The packaging script names the renderer of the Preview Host it ships
+  // (previewRendererId); without it the Engine has no Preview Host.
+  const previewRenderer = process.env['DT_PREVIEW_RENDERER'] ?? null;
+  if (previewRenderer !== null && !/^electron\/[0-9.]+ chromium\/[0-9.]+$/.test(previewRenderer))
+    throw new Error(`invalid DT_PREVIEW_RENDERER: ${previewRenderer}`);
   return {
     mode,
     appVersion,
     desktopRequirement: releaseRequirement(appId, teamId),
     github: clientId !== null && appSlug !== null ? { clientId, appSlug } : { ...RELEASE_GITHUB_APP },
+    previewRenderer,
   };
 }
 

@@ -2,8 +2,9 @@ import { z } from 'zod';
 import { PreviewBlockedKind, PreviewImageKind, PreviewSettings, PreviewSubject } from './preview.ts';
 
 // The private pipe between the Engine and a Preview Host process (TECH_STACK
-// §10.1). The Engine starts the app binary in Preview Host mode and talks to
-// it over one inherited pipe (fd 3), never a socket or port: the host gets one
+// §10.1). The Engine starts the Preview Host (in a release its own signed
+// executable, packagedLayout's previewHost; in development the app binary)
+// and talks to it over one inherited pipe (fd 3), never a socket or port: the host gets one
 // job at a time and the files that job's page asks for, and nothing else (no
 // data directory, database, Git, tokens or Engine channel).
 //
@@ -16,7 +17,8 @@ export const PREVIEW_HOST_MAX_HEADER_BYTES = 256 * 1024;
 // image box is well within this too.
 export const PREVIEW_HOST_MAX_BODY_BYTES = 64 * 1024 * 1024;
 
-// Started as `<app> --dt-preview-host` (plus the development app path).
+// Started as `<preview host> --dt-preview-host` (plus the development app
+// path). A release's app executable refuses it.
 export const PREVIEW_HOST_FLAG = '--dt-preview-host';
 // The host's private scratch directory (user data, caches), made and removed
 // by the Engine.
@@ -118,8 +120,8 @@ export function previewRendererId(electron: string, chromium: string): string {
 }
 
 // Development and e2e builds only: how the Engine starts its Preview Host,
-// given by the launcher in DRAFT_TIDE_PREVIEW_HOST (release builds derive it
-// from the app bundle, M1-09).
+// given by the launcher in DRAFT_TIDE_PREVIEW_HOST (a release Engine finds
+// the Preview Host of its own app, with the renderer compiled in).
 export const PREVIEW_HOST_ENV = 'DRAFT_TIDE_PREVIEW_HOST';
 export const PreviewHostLaunch = z.strictObject({
   command: z.string().min(1).max(4096),

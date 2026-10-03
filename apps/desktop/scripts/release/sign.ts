@@ -5,8 +5,8 @@
 // timestamp. No file gets get-task-allow, dyld environment variables or a
 // library-validation exemption (CLAUDE.md "Hardening"), so library validation
 // admits only the team's code and the system's. Entitlements:
-// - JIT only: the app and its helpers (V8), the companion Node and the Engine
-//   (a SEA crashes at start without it).
+// - JIT only: the app, its Preview Host and its helpers (V8), the companion
+//   Node and the Engine (a SEA crashes at start without it).
 // - Nothing: Git, the Engine's addons, frameworks and libraries.
 //
 // Identifiers: the payload's own (config.ts), never the app's; bundles keep the
@@ -15,6 +15,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { sign } from '@electron/osx-sign';
+import { ENGINE_EXECUTABLE, PREVIEW_HOST_EXECUTABLE } from '@draft-tide/engine-client';
 import type { ReleaseIdentifiers } from './config.ts';
 
 function entitlementsFile(dir: string, name: string, keys: string[]): string {
@@ -39,16 +40,20 @@ export interface PayloadFile {
   jit: boolean;
 }
 
-// The payload's Mach-Os, by path inside Contents/Resources.
+// The Mach-Os Draft Tide adds to Electron's bundle, by path inside Contents
+// (packagedLayout): the Preview Host beside the app's executable, and the
+// payload in Resources.
 export function payloadSigning(ids: ReleaseIdentifiers): Map<string, PayloadFile> {
+  const resources = (...parts: string[]) => join('Resources', ...parts);
   return new Map<string, PayloadFile>([
-    [join('node', 'bin', 'node'), { identifier: ids.node, jit: true }],
-    [join('engine', 'draft-tide-engine'), { identifier: ids.engine, jit: true }],
-    [join('engine', 'better_sqlite3.node'), { identifier: `${ids.addon}.better-sqlite3`, jit: false }],
-    [join('engine', 'peer-identity.node'), { identifier: `${ids.addon}.peer-identity`, jit: false }],
-    [join('engine', 'keychain.node'), { identifier: `${ids.addon}.keychain`, jit: false }],
-    [join('git', 'bin', 'git'), { identifier: ids.git, jit: false }],
-    [join('git', 'libexec', 'git-core', 'git-remote-https'), { identifier: ids.gitRemoteHttps, jit: false }],
+    [join('MacOS', PREVIEW_HOST_EXECUTABLE), { identifier: ids.previewHost, jit: true }],
+    [resources('node', 'bin', 'node'), { identifier: ids.node, jit: true }],
+    [resources('engine', ENGINE_EXECUTABLE), { identifier: ids.engine, jit: true }],
+    [resources('engine', 'better_sqlite3.node'), { identifier: `${ids.addon}.better-sqlite3`, jit: false }],
+    [resources('engine', 'peer-identity.node'), { identifier: `${ids.addon}.peer-identity`, jit: false }],
+    [resources('engine', 'keychain.node'), { identifier: `${ids.addon}.keychain`, jit: false }],
+    [resources('git', 'bin', 'git'), { identifier: ids.git, jit: false }],
+    [resources('git', 'libexec', 'git-core', 'git-remote-https'), { identifier: ids.gitRemoteHttps, jit: false }],
   ]);
 }
 
@@ -66,7 +71,7 @@ export async function signApp(app: string, identity: string, ids: ReleaseIdentif
   const dir = mkdtempSync(join(tmpdir(), 'dt-entitlements-'));
   const jit = entitlementsFile(dir, 'jit', [JIT_ENTITLEMENT]);
   const none = entitlementsFile(dir, 'none', []);
-  const resources = join(app, 'Contents', 'Resources');
+  const contents = join(app, 'Contents');
   const payload = payloadSigning(ids);
   const seen = new Set<string>();
   await sign({
@@ -78,9 +83,9 @@ export async function signApp(app: string, identity: string, ids: ReleaseIdentif
     preEmbedProvisioningProfile: false,
     strictVerify: true,
     optionsForFile: (file: string) => {
-      const own = payload.get(relative(resources, file));
+      const own = payload.get(relative(contents, file));
       if (own) {
-        seen.add(relative(resources, file));
+        seen.add(relative(contents, file));
         return {
           hardenedRuntime: true,
           entitlements: own.jit ? jit : none,

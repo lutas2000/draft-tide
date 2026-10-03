@@ -2,10 +2,11 @@
 // on real SEAs built the way release packaging builds them (ad hoc signed
 // here; packaging re-signs with the Developer ID).
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { connectEngine, runtimePaths } from '@draft-tide/engine-client';
+import { dirname, join } from 'node:path';
+import { previewRendererId } from '@draft-tide/contracts';
+import { connectEngine, packagedLayout, runtimePaths } from '@draft-tide/engine-client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildEngineSea, buildNative, releaseRequirement } from '../scripts/build.ts';
 import { unexpectedVariables } from '../src/engine/environment.ts';
@@ -97,15 +98,32 @@ describe.runIf(process.platform === 'darwin')('the Engine as a Node SEA (macOS)'
     buildNative();
     const nativeDir = join(COMPANION, 'dist', 'native');
     devEngine = await buildEngineSea(
-      { mode: 'development', appVersion: '0.0.0-sea', desktopRequirement: null, github: noGitHub },
+      {
+        mode: 'development',
+        appVersion: '0.0.0-sea',
+        desktopRequirement: null,
+        github: noGitHub,
+        previewRenderer: null,
+      },
       join(work, 'development'),
       nativeDir,
     );
+    // In an app's layout, beside a Preview Host (a stand-in: the Engine only
+    // looks for it until a render).
+    const layout = packagedLayout(join(work, 'Release.app', 'Contents', 'Resources'));
     releaseEngine = await buildEngineSea(
-      { mode: 'release', appVersion: '9.9.9-sea', desktopRequirement: requirement, github: noGitHub },
-      join(work, 'release'),
+      {
+        mode: 'release',
+        appVersion: '9.9.9-sea',
+        desktopRequirement: requirement,
+        github: noGitHub,
+        previewRenderer: previewRendererId('1.0.0', '2.0.0'),
+      },
+      layout.engineDir,
       nativeDir,
     );
+    mkdirSync(dirname(layout.previewHost), { recursive: true });
+    writeFileSync(layout.previewHost, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
   }, 180_000);
 
   afterAll(async () => {
@@ -133,7 +151,7 @@ describe.runIf(process.platform === 'darwin')('the Engine as a Node SEA (macOS)'
     },
   );
 
-  it('a release Engine starts in its allowlist, loads SQLite and its addons, and checks the desktop by signature', async () => {
+  it('a release Engine starts in its allowlist, loads SQLite and its addons, finds its Preview Host, and checks the desktop by signature', async () => {
     const dataDir = tempDataDir();
     run(releaseEngine, { ...BASE_ENV(), DRAFT_TIDE_DATA_DIR: dataDir, DRAFT_TIDE_ENGINE_IDLE_MS: '60000' });
     expect(await until(() => readDiscovery(dataDir) !== null)).toBe(true);
@@ -144,6 +162,10 @@ describe.runIf(process.platform === 'darwin')('the Engine as a Node SEA (macOS)'
       runtime: { node: process.version },
     });
     conn.close();
+    // It found the Preview Host of its own app.
+    const log = readFileSync(join(dataDir, 'diagnostics', 'engine.log'), 'utf8');
+    expect(log).toContain('ready: release 9.9.9-sea');
+    expect(log).not.toContain('no Preview Host');
     // This test process isn't the signed app: no desktop session.
     const raw = await RawClient.open(runtimePaths(dataDir).socket);
     raw.send(hello('desktop'));

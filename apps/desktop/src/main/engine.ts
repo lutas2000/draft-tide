@@ -20,8 +20,8 @@ import { BUILD } from './build-info.ts';
 
 // Development and e2e builds: the Engine's Preview Host is this same
 // Electron and Main bundle, started with --dt-preview-host. (Main is one
-// bundle, so this module's URL is the bundle's.) Release builds: M1-09 gives
-// the Preview Host its place, and its own signing identity, in the app bundle.
+// bundle, so this module's URL is the bundle's.) A release Engine finds the
+// app's own Preview Host executable itself (packagedLayout).
 function previewHost(): PreviewHostLaunch {
   return {
     command: process.execPath,

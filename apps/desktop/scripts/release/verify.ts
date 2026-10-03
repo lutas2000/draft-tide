@@ -5,8 +5,10 @@
 //   Engine's designated requirement is what its keychain item will trust; the
 //   Engine carries the desktop requirement compiled in; the fuses are set.
 // - runtime: the signed Engine refuses an unexpected environment, the
-//   packaged CLI on the packaged Node starts it and gets engine.info, and the
-//   bundled Git runs with its https helper.
+//   packaged CLI on the packaged Node starts it and gets engine.info, the
+//   bundled Git runs with its https helper, and the Preview Host renders a
+//   page under the Engine's own supervisor while failing the desktop
+//   requirement (the app's executable refuses to render).
 // Gatekeeper's verdict comes after notarization (package.ts).
 import { spawn, spawnSync } from 'node:child_process';
 import {
@@ -20,10 +22,21 @@ import {
   readdirSync,
   rmSync,
 } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { basename, join, relative } from 'node:path';
 import { FuseState, FuseV1Options, getCurrentFuseWire } from '@electron/fuses';
+import {
+  PREVIEW_ANIMATIONS,
+  PREVIEW_HOST_FLAG,
+  PREVIEW_LOCALE,
+  PREVIEW_THUMBNAIL,
+  PREVIEW_VIEWPORT,
+  PREVIEW_WAIT,
+  ProjectId,
+} from '@draft-tide/contracts';
 import { packagedLayout } from '@draft-tide/engine-client';
+import { createPreviewSupervisor, type PreviewSupervisor } from '../../../companion/src/engine/preview-host.ts';
 import type { ReleaseIdentifiers } from './config.ts';
 import { FORBIDDEN_ENTITLEMENTS, JIT_ENTITLEMENT, payloadSigning } from './sign.ts';
 
@@ -120,17 +133,18 @@ export function staticChecks(
   const identifierOf = (file: string) => /^Identifier=(.+)$/m.exec(codesign(['-dv', file]).out)?.[1] ?? null;
   const appIdentifier = identifierOf(app);
   if (appIdentifier !== ids.app) wrongIds.push({ file: '.', identifier: appIdentifier, expected: ids.app });
+  const contents = join(app, 'Contents');
   for (const [rel, want] of payloadSigning(ids)) {
-    const identifier = existsSync(join(resources, rel)) ? identifierOf(join(resources, rel)) : null;
+    const identifier = existsSync(join(contents, rel)) ? identifierOf(join(contents, rel)) : null;
     if (identifier !== want.identifier) wrongIds.push({ file: rel, identifier, expected: want.identifier });
-    const ents = codesign(['-d', '--entitlements', '-', '--xml', join(resources, rel)]).out;
+    const ents = codesign(['-d', '--entitlements', '-', '--xml', join(contents, rel)]).out;
     if (ents.includes(JIT_ENTITLEMENT) !== want.jit)
       wrongIds.push({ file: rel, identifier: `jit=${!want.jit}`, expected: `jit=${want.jit}` });
   }
   checks.push({
     id: 'S3',
     description:
-      'the app, the companion Node, the Engine, its addons and Git have their own identifiers; only the Node and the Engine get JIT',
+      'the app, the Preview Host, the companion Node, the Engine, its addons and Git have their own identifiers; of these only the Preview Host, the Node and the Engine get JIT',
     ok: wrongIds.length === 0,
     details: wrongIds,
   });
@@ -138,12 +152,13 @@ export function staticChecks(
   const req = `-R=${options.desktopRequirement}`;
   const appPasses = codesign(['--verify', req, app]).ok;
   const helpers = files.filter((f) => relative(app, f).includes('Helper'));
-  const passing = [layout.node, layout.engine, ...helpers]
+  const passing = [layout.previewHost, layout.node, layout.engine, ...helpers]
     .filter((f) => codesign(['--verify', req, f]).ok)
     .map((f) => relative(app, f));
   checks.push({
     id: 'S4',
-    description: 'the app satisfies the desktop requirement; the companion Node, the Engine and every helper fail it',
+    description:
+      'the app satisfies the desktop requirement; the Preview Host, the companion Node, the Engine and every helper fail it',
     ok: appPasses && passing.length === 0,
     details: { appPasses, passing },
   });
@@ -258,11 +273,12 @@ export async function runtimeChecks(
       ...(log.includes('no Git available') ? ['no Git'] : []),
       ...(log.includes('desktop identity unavailable') ? ['no desktop identity check'] : []),
       ...(options.githubConfigured && log.includes('GitHub sign-in unavailable') ? ['no GitHub sign-in'] : []),
+      ...(log.includes('no Preview Host') ? ['no Preview Host'] : []),
     ];
     checks.push({
       id: 'R2',
       description:
-        'the packaged CLI on the packaged Node starts the signed Engine, which loads SQLite, the identity and keychain addons and the bundled Git',
+        'the packaged CLI on the packaged Node starts the signed Engine, which loads SQLite, the identity and keychain addons, the bundled Git and its Preview Host',
       ok:
         envelope.ok === true &&
         envelope.data?.['appVersion'] === options.appVersion &&
@@ -305,6 +321,138 @@ export async function runtimeChecks(
     }
     await new Promise((r) => setTimeout(r, 500));
     rmSync(dataDir, { recursive: true, force: true });
+  }
+  return checks;
+}
+
+type RenderJob = Parameters<PreviewSupervisor['render']>[0];
+type FileSource = Parameters<PreviewSupervisor['render']>[1];
+
+// A page whose script runs and then tries the network.
+const PREVIEW_CHECK_PAGE = `<!doctype html><meta charset="utf-8"><title>check</title>
+<style>body{margin:0;background:#2563eb;color:#fff;font:48px system-ui}</style>
+<h1 id="h">waiting</h1>
+<script>document.getElementById('h').textContent = 'script ran';
+fetch('https://example.com/draft-tide-release-check').catch(() => undefined);</script>`;
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// The Preview Host (R4, R5): the packaged executable under the Engine's own
+// supervisor (apps/companion/src/engine/preview-host.ts, the code the release
+// Engine runs), with the renderer compiled into the Engine. While it idles
+// after the render, the running process is checked against the desktop
+// requirement: a page that escaped the renderer's sandbox runs as this
+// process. Then the app's executable must refuse to render, and the Preview
+// Host to run without the Engine's flag.
+export async function previewHostChecks(
+  app: string,
+  options: { renderer: string; desktopRequirement: string; previewHostId: string },
+): Promise<Check[]> {
+  const checks: Check[] = [];
+  const layout = packagedLayout(join(app, 'Contents', 'Resources'));
+  const logs: string[] = [];
+  const supervisor = createPreviewSupervisor({
+    launch: { command: layout.previewHost, args: [], renderer: options.renderer },
+    timezone: 'UTC',
+    log: (msg) => logs.push(msg),
+  });
+  const job: RenderJob = {
+    jobId: randomUUID(),
+    projectId: ProjectId.parse(randomUUID()),
+    subject: { kind: 'page', path: 'index.html' },
+    settings: {
+      viewport: { ...PREVIEW_VIEWPORT },
+      thumbnail: { ...PREVIEW_THUMBNAIL },
+      locale: PREVIEW_LOCALE,
+      timezone: 'UTC',
+      scripts: true,
+      wait: PREVIEW_WAIT,
+      animations: PREVIEW_ANIMATIONS,
+    },
+    output: { width: PREVIEW_VIEWPORT.width, height: PREVIEW_VIEWPORT.height },
+    thumbnail: { ...PREVIEW_THUMBNAIL },
+    timeoutMs: 20_000,
+  };
+  const files: FileSource = {
+    read: (path) =>
+      Promise.resolve(
+        path === '/index.html'
+          ? { status: 'ok', contentType: 'text/html', bytes: new TextEncoder().encode(PREVIEW_CHECK_PAGE) }
+          : { status: 'missing' },
+      ),
+  };
+  try {
+    const started = Date.now();
+    let rendered: Record<string, unknown>;
+    let renderOk = false;
+    try {
+      const out = await supervisor.render(job, files, new AbortController().signal);
+      renderOk =
+        out.environment.renderer === options.renderer &&
+        out.full.width === PREVIEW_VIEWPORT.width &&
+        out.full.height === PREVIEW_VIEWPORT.height &&
+        out.thumbnail.width === PREVIEW_THUMBNAIL.width &&
+        out.blocked.entries.some((e) => e.target.startsWith('https://example.com/'));
+      rendered = {
+        ms: Date.now() - started,
+        renderer: out.environment.renderer,
+        full: `${out.full.width}x${out.full.height}`,
+        blocked: out.blocked.entries,
+      };
+    } catch (e) {
+      rendered = { error: e instanceof Error ? e.message : String(e), log: logs.join(' / ').slice(-600) };
+    }
+    const pids = spawnSync(
+      '/usr/bin/pgrep',
+      ['-f', '--', `^${escapeRegExp(layout.previewHost)} ${PREVIEW_HOST_FLAG}`],
+      {
+        encoding: 'utf8',
+      },
+    )
+      .stdout.trim()
+      .split('\n')
+      .filter((p) => p !== '');
+    const live = pids.map((pid) => ({
+      pid,
+      identifier: /^Identifier=(.+)$/m.exec(codesign(['-dv', pid]).out)?.[1] ?? null,
+      passesDesktop: codesign(['--verify', `-R=${options.desktopRequirement}`, pid]).ok,
+    }));
+    checks.push({
+      id: 'R4',
+      description:
+        "the Preview Host renders a page under the Engine's supervisor (the renderer compiled into the Engine, the network closed), and the running host has its own identifier and fails the desktop requirement",
+      ok:
+        renderOk && live.length === 1 && live.every((l) => l.identifier === options.previewHostId && !l.passesDesktop),
+      details: { rendered, live },
+    });
+  } finally {
+    supervisor.stop();
+  }
+
+  // R5: each executable only in its own role.
+  const scratch = mkdtempSync(join(tmpdir(), 'dt-preview-check-'));
+  try {
+    const env = { HOME: scratch, TMPDIR: scratch, PATH: '/usr/bin:/bin', LANG: 'en_US.UTF-8' };
+    const appExe = join(app, 'Contents', 'MacOS', basename(app, '.app'));
+    const appRun = spawnSync(appExe, [PREVIEW_HOST_FLAG], { env, encoding: 'utf8', timeout: 30_000 });
+    const hostRun = spawnSync(layout.previewHost, [], { env, encoding: 'utf8', timeout: 30_000 });
+    checks.push({
+      id: 'R5',
+      description: `the app's executable refuses ${PREVIEW_HOST_FLAG}, and the Preview Host refuses to start without it`,
+      ok:
+        appRun.status === 2 &&
+        appRun.stderr.includes(`refusing ${PREVIEW_HOST_FLAG}`) &&
+        hostRun.status === 2 &&
+        hostRun.stderr.includes('the Preview Host runs only when the Engine starts it'),
+      details: {
+        app: { status: appRun.status, stderr: appRun.stderr.trim().slice(-200) },
+        previewHost: { status: hostRun.status, stderr: hostRun.stderr.trim().slice(-200) },
+      },
+    });
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
   }
   return checks;
 }

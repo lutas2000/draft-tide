@@ -14,6 +14,11 @@ export interface BuildInfo {
   // The GitHub App sign-in uses (M1 plan §10.1): its public client ID and
   // URL name. Both null: this build can't sign in.
   github: { clientId: string | null; appSlug: string | null };
+  // Release builds: the renderer of the Preview Host packaged with this
+  // Engine (previewRendererId of its Electron and Chromium), which previews
+  // are cached under; null: no Preview Host. Development builds take the
+  // host, renderer included, from their launcher (DRAFT_TIDE_PREVIEW_HOST).
+  previewRenderer: string | null;
 }
 
 // The development GitHub App (installable on its owner's account only).
@@ -30,4 +35,10 @@ declare const __DT_BUILD__: BuildInfo | undefined;
 export const BUILD: BuildInfo =
   typeof __DT_BUILD__ !== 'undefined'
     ? __DT_BUILD__
-    : { mode: 'development', appVersion: '0.0.0-dev', desktopRequirement: null, github: { ...DEV_GITHUB_APP } };
+    : {
+        mode: 'development',
+        appVersion: '0.0.0-dev',
+        desktopRequirement: null,
+        github: { ...DEV_GITHUB_APP },
+        previewRenderer: null,
+      };

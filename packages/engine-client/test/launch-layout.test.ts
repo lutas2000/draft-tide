@@ -59,6 +59,7 @@ describe('the packaged layout', () => {
       git: '/App.app/Contents/Resources/git/bin/git',
       gitExecPath: '/App.app/Contents/Resources/git/libexec/git-core',
       skillDir: '/App.app/Contents/Resources/skills/draft-tide',
+      previewHost: '/App.app/Contents/MacOS/Draft Tide Preview',
     });
   });
 
@@ -66,5 +67,6 @@ describe('the packaged layout', () => {
     const layout = packagedLayout('C:\\Draft Tide\\resources', 'win32');
     expect(layout.engine).toBe('C:\\Draft Tide\\resources\\engine\\draft-tide-engine.exe');
     expect(layout.node).toBe('C:\\Draft Tide\\resources\\node\\bin\\node.exe');
+    expect(layout.previewHost).toBe('C:\\Draft Tide\\Draft Tide Preview.exe');
   });
 });
