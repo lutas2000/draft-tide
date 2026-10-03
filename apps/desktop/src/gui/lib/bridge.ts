@@ -5,7 +5,7 @@ import {
   type OperationInput,
   type OperationOutput,
 } from '@draft-tide/contracts';
-import type { DraftTideBridge } from '../../shared/bridge.ts';
+import type { AgentSetup, DraftTideBridge } from '../../shared/bridge.ts';
 
 declare global {
   interface Window {
@@ -54,4 +54,9 @@ export async function openExternal(url: string): Promise<boolean> {
 
 export async function copyText(text: string): Promise<boolean> {
   return (await bridge()?.copyText(text)) ?? false;
+}
+
+// Where this installation's CLI, MCP server and Skill are; null outside the app.
+export async function agentSetup(): Promise<AgentSetup | null> {
+  return (await bridge()?.agentSetup()) ?? null;
 }

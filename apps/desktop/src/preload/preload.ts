@@ -16,6 +16,7 @@ const bridge: DraftTideBridge = {
   chooseFolder: (defaultPath) => ipcRenderer.invoke(IPC.chooseFolder, defaultPath),
   openExternal: (url) => ipcRenderer.invoke(IPC.openExternal, url),
   copyText: (text) => ipcRenderer.invoke(IPC.copyText, text),
+  agentSetup: () => ipcRenderer.invoke(IPC.agentSetup),
   connectionState: () => ipcRenderer.invoke(IPC.connectionState),
   reconnect: () => ipcRenderer.invoke(IPC.reconnect),
   onEvent: (listener) => subscribe<BridgeEvent>(IPC.event, listener),
