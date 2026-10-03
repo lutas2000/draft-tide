@@ -5,8 +5,9 @@
 //   node scripts/build.ts --e2e    Playwright build → dist-e2e/
 //
 // Development and e2e builds start the companion from apps/companion/dist with
-// the Node that runs this script. Release packaging (bundled Node, signing,
-// fuses) is M1-09.
+// the Node that runs this script. Release builds (dist-release/) find the
+// companion, the Engine, Git and the Skill in the app's resources; only the
+// packaging script (scripts/package.ts) makes them.
 import { existsSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,21 +21,27 @@ const companionCli = join(root, '..', 'companion', 'dist', 'cli.mjs');
 const skillDir = join(root, '..', '..', 'skills', 'draft-tide');
 
 export interface DesktopBuildOptions {
-  mode: 'development' | 'e2e';
+  mode: 'development' | 'e2e' | 'release';
   guiDevUrl?: string;
   skipGui?: boolean;
+  appVersion?: string;
 }
 
+const OUT_DIRS = { development: 'dist', e2e: 'dist-e2e', release: 'dist-release' } as const;
+
 export async function buildDesktop(options: DesktopBuildOptions): Promise<string> {
-  if (!existsSync(companionEngine)) {
+  const release = options.mode === 'release';
+  if (!release && !existsSync(companionEngine)) {
     throw new Error(`companion is not built (${companionEngine}); run: pnpm --filter @draft-tide/companion build`);
   }
-  const outDir = join(root, options.mode === 'e2e' ? 'dist-e2e' : 'dist');
+  const outDir = join(root, OUT_DIRS[options.mode]);
   const info: DesktopBuildInfo = {
     mode: options.mode,
-    appVersion: process.env['DT_APP_VERSION'] ?? '0.0.0-dev',
-    guiDevUrl: options.guiDevUrl ?? null,
-    companion: { nodePath: process.execPath, engineEntry: companionEngine, cliEntry: companionCli, skillDir },
+    appVersion: options.appVersion ?? process.env['DT_APP_VERSION'] ?? '0.0.0-dev',
+    guiDevUrl: release ? null : (options.guiDevUrl ?? null),
+    companion: release
+      ? null
+      : { nodePath: process.execPath, engineEntry: companionEngine, cliEntry: companionCli, skillDir },
     allowDebugSwitches: options.mode === 'e2e',
   };
   for (const part of ['main', 'preload']) rmSync(join(outDir, part), { recursive: true, force: true });
@@ -45,7 +52,7 @@ export async function buildDesktop(options: DesktopBuildOptions): Promise<string
     external: ['electron'],
     define: { __DT_DESKTOP_BUILD__: JSON.stringify(info) },
     logLevel: 'warning' as const,
-    sourcemap: true,
+    sourcemap: !release,
   };
   await esbuild({
     ...common,
@@ -66,7 +73,7 @@ export async function buildDesktop(options: DesktopBuildOptions): Promise<string
     await viteBuild({
       configFile: join(root, 'vite.config.ts'),
       logLevel: 'warn',
-      build: { outDir: join(outDir, 'gui'), emptyOutDir: true },
+      build: { outDir: join(outDir, 'gui'), emptyOutDir: true, sourcemap: !release },
     });
   }
   return outDir;
@@ -74,7 +81,7 @@ export async function buildDesktop(options: DesktopBuildOptions): Promise<string
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (process.argv.includes('--release')) {
-    throw new Error('release packaging (signing, fuses, bundled Node) arrives with M1-09');
+    throw new Error('release builds are made by the packaging script: node scripts/package.ts');
   }
   const mode = process.argv.includes('--e2e') ? 'e2e' : 'development';
   const out = await buildDesktop({ mode });

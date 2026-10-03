@@ -1,7 +1,3 @@
-import { existsSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { RemoteProvider } from '@draft-tide/core';
 import {
   GITHUB_ENDPOINTS,
@@ -13,6 +9,7 @@ import {
   type TokenVault,
 } from '@draft-tide/remote-github';
 import type { BuildInfo } from '../build-info.ts';
+import { loadEngineAddon } from './addons.ts';
 
 // GitHub for the Engine (CLAUDE.md "GitHub sign-in", "Token custody"). The
 // grant lives in one login-keychain item per data store, created by the
@@ -37,18 +34,9 @@ const ERR_ITEM_NOT_FOUND = -25300;
 // development Node made it). Anything else (a locked keychain:
 // errSecInteractionNotAllowed) must never cost the user their sign-in.
 const NOT_TRUSTED = new Set([-25293, -25243, -25244]);
-const ADDON_FILE = 'keychain.node';
-
-// Next to the bundled engine.mjs (dist/native), or the dev build when running
-// from source. Never a path from the environment, arguments or settings.
 function loadAddon(): KeychainAddon | null {
   if (process.platform !== 'darwin') return null;
-  const here = dirname(fileURLToPath(import.meta.url));
-  const file = [join(here, 'native', ADDON_FILE), join(here, '..', '..', 'dist', 'native', ADDON_FILE)].find((c) =>
-    existsSync(c),
-  );
-  if (!file) return null;
-  return createRequire(import.meta.url)(file) as KeychainAddon;
+  return loadEngineAddon<KeychainAddon>('keychain.node');
 }
 
 export function createKeychainVault(

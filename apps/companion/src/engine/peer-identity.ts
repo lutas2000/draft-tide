@@ -1,9 +1,6 @@
-import { existsSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import type { Socket } from 'node:net';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { DesktopIdentityMode } from '@draft-tide/contracts';
+import { loadEngineAddon } from './addons.ts';
 
 // Desktop identity (CLAUDE.md "Desktop identity"): the Engine checks who is on
 // the other end of a desktop connection by code signature, and pins that
@@ -32,23 +29,9 @@ interface PeerAddon {
   ): PeerInstance & { valid: boolean; status: number; identifier?: string | null; teamId?: string | null };
 }
 
-const ADDON_FILE = 'peer-identity.node';
-
-// Next to the bundled engine.mjs (dist/native), or the dev build when running
-// from source.
-function findAddon(): string | null {
-  const here = dirname(fileURLToPath(import.meta.url));
-  for (const candidate of [join(here, 'native', ADDON_FILE), join(here, '..', '..', 'dist', 'native', ADDON_FILE)]) {
-    if (existsSync(candidate)) return candidate;
-  }
-  return null;
-}
-
 function loadAddon(): PeerAddon | null {
   if (process.platform !== 'darwin') return null;
-  const file = findAddon();
-  if (!file) return null;
-  return createRequire(import.meta.url)(file) as PeerAddon;
+  return loadEngineAddon<PeerAddon>('peer-identity.node');
 }
 
 // Node keeps the descriptor on the socket's internal handle.

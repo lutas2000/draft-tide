@@ -28,7 +28,17 @@ const WRITERS = ['@draft-tide/core', ...ADAPTERS, 'better-sqlite3'];
 
 export default tseslint.config(
   {
-    ignores: ['**/dist/**', '**/dist-e2e/**', '**/out/**', '**/node_modules/**', 'spikes/**', '.ref/**', '**/*.d.ts'],
+    ignores: [
+      '**/dist/**',
+      '**/dist-e2e/**',
+      '**/dist-release/**',
+      '**/.cache/**',
+      '**/out/**',
+      '**/node_modules/**',
+      'spikes/**',
+      '.ref/**',
+      '**/*.d.ts',
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,

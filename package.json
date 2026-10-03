@@ -20,7 +20,8 @@
     "schemas": "corepack pnpm --filter @draft-tide/contracts run schemas",
     "check": "corepack pnpm run format:check && corepack pnpm run lint && corepack pnpm run typecheck && corepack pnpm run build && corepack pnpm run test",
     "desktop": "corepack pnpm --filter @draft-tide/desktop run start",
-    "desktop:dev": "corepack pnpm --filter @draft-tide/desktop run dev"
+    "desktop:dev": "corepack pnpm --filter @draft-tide/desktop run dev",
+    "release:mac": "corepack pnpm --filter @draft-tide/desktop run package"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

@@ -300,7 +300,14 @@ describe('the first manual flow (M1-04)', () => {
     const copied = await app.evaluate(({ clipboard }) => clipboard.readText());
     const config = JSON.parse(copied) as { mcpServers: { 'draft-tide': { command: string; args: string[] } } };
     expect(config.mcpServers['draft-tide'].command).toBe(process.execPath);
-    expect(config.mcpServers['draft-tide'].args).toEqual([companionCli, '--data-dir', dataDir, 'mcp', 'serve']);
+    expect(config.mcpServers['draft-tide'].args).toEqual([
+      '--disable-sigusr1',
+      companionCli,
+      '--data-dir',
+      dataDir,
+      'mcp',
+      'serve',
+    ]);
     const skill = await card.locator('pre').nth(2).innerText();
     expect(existsSync(join(skill, 'SKILL.md'))).toBe(true);
     await page.screenshot({ path: join(shots, 'settings-agent-setup.png') });

@@ -1,13 +1,15 @@
-// The preview supervisor (TECH_STACK §10.1): starts the app binary in Preview
-// Host mode and drives it over one inherited pipe. The host gets a job and,
+// The preview supervisor (TECH_STACK §10.1): starts the Preview Host (the
+// app's own Preview Host executable in a release, the app binary in Preview
+// Host mode in development) and drives it over one inherited pipe. The host gets a job and,
 // for each file its page asks for, exactly what core's file source answers;
 // it has no data directory, database, Git, tokens or Engine channel. Its
 // environment is built from scratch, and its scratch directory (user data,
 // caches) is removed when it exits.
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
+import { isSea } from 'node:sea';
 import type { Duplex } from 'node:stream';
 import {
   DtError,
@@ -32,7 +34,7 @@ import {
   type RenderJob,
   type RenderOutput,
 } from '@draft-tide/core';
-import { HostFrameDecoder, encodeHostFrame } from '@draft-tide/engine-client';
+import { HostFrameDecoder, encodeHostFrame, packagedLayout } from '@draft-tide/engine-client';
 import type { BuildInfo } from '../build-info.ts';
 
 // How long a host may take to start and say it is ready.
@@ -45,11 +47,22 @@ const IDLE_MS = 10_000;
 const JOBS_PER_HOST = 20;
 const STDERR_TAIL = 8 * 1024;
 
-// Release builds have no Preview Host until M1-09 places it in the app bundle
-// (and gives it its own signing identity). Development and e2e builds take it
-// from the launcher.
-export function previewHostLaunch(build: BuildInfo, env = process.env): PreviewHostLaunch | null {
-  if (build.mode === 'release') return null;
+// Release builds: the Preview Host packaged in the same app, found from the
+// Engine executable's own place (packagedLayout), under the renderer compiled
+// in; never one named by the environment (which the release Engine refuses
+// anyway). It is its own signed executable, outside the desktop requirement,
+// so a page that escaped the renderer's sandbox can't pass for the desktop.
+// Development and e2e builds take it from the launcher.
+export function previewHostLaunch(
+  build: BuildInfo,
+  env = process.env,
+  engine = { sea: isSea(), execPath: process.execPath },
+): PreviewHostLaunch | null {
+  if (build.mode === 'release') {
+    if (!build.previewRenderer || !engine.sea) return null;
+    const command = packagedLayout(dirname(dirname(engine.execPath))).previewHost;
+    return existsSync(command) ? { command, args: [], renderer: build.previewRenderer } : null;
+  }
   const raw = env[PREVIEW_HOST_ENV];
   if (!raw) return null;
   let parsed: unknown;

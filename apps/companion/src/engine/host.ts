@@ -1,6 +1,7 @@
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { readdir, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { isSea } from 'node:sea';
 import {
   canonicalRoot,
   createStagingArea,
@@ -11,6 +12,7 @@ import {
 } from '@draft-tide/adapter-filesystem';
 import { DtError, OperationId, ProjectId } from '@draft-tide/contracts';
 import type { ProjectHost } from '@draft-tide/core';
+import { packagedLayout } from '@draft-tide/engine-client';
 import {
   createScratchGitDir,
   detectExecPath,
@@ -24,18 +26,31 @@ import {
 import type { BuildInfo } from '../build-info.ts';
 
 // Which Git the Engine runs. Release builds use only the Git bundled with the
-// app (M1-09 packages it), never one from PATH; until then they have none.
-// Development builds use DRAFT_TIDE_GIT or the first `git` on PATH. HOME is an
-// empty private directory, so nothing personal is read.
+// app, found from the Engine executable's own place in the app's resources
+// (packagedLayout), never one from PATH or the environment. It can't derive
+// its exec path, so GIT_EXEC_PATH is always set for it. Development builds
+// use DRAFT_TIDE_GIT or the first `git` on PATH. HOME is an empty private
+// directory, so nothing personal is read.
 export function engineGitRuntime(build: BuildInfo, dataDir: string, env = process.env): GitRuntime | null {
-  if (build.mode === 'release') return null;
-  const gitPath = findGitOnPath(env);
-  if (!gitPath) return null;
+  let git: { gitPath: string; execPath: string | null } | null;
+  if (build.mode === 'release') {
+    git = bundledGit();
+  } else {
+    const gitPath = findGitOnPath(env);
+    // A Git that can't find git-remote-https on its own (dugite's build) gets
+    // GIT_EXEC_PATH; a system Git finds its own.
+    git = gitPath ? { gitPath, execPath: detectExecPath(gitPath) } : null;
+  }
+  if (!git) return null;
   const homeDir = join(dataDir, 'git-home');
   mkdirSync(homeDir, { recursive: true, mode: 0o700 });
-  // A Git that can't find git-remote-https on its own (dugite's build) gets
-  // GIT_EXEC_PATH; a system Git finds its own.
-  return { gitPath, execPath: detectExecPath(gitPath), homeDir };
+  return { ...git, homeDir };
+}
+
+function bundledGit(): { gitPath: string; execPath: string } | null {
+  if (!isSea()) return null;
+  const layout = packagedLayout(dirname(dirname(process.execPath)));
+  return existsSync(layout.git) ? { gitPath: layout.git, execPath: layout.gitExecPath } : null;
 }
 
 // Where network operations make their ephemeral git dirs (0700, removed after

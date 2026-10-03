@@ -26,6 +26,8 @@ corepack pnpm run check     # format, lint, typecheck, build, tests
 corepack pnpm run desktop   # build and launch the desktop app
 ```
 
+The signed macOS package (Apple Silicon, a Developer ID certificate, an official Node build) is made with `corepack pnpm run release:mac`; the variables it needs are described in [`docs/m1-09-release.md`](docs/m1-09-release.md).
+
 ## License
 
 This project is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text.
