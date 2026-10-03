@@ -6,10 +6,11 @@ M1-09 turns the M1 build into an installable alpha. This first part builds the m
 - **The Engine is a Node SEA** with its own signing identifier, its addons beside it, and an environment allowlist it checks before anything else.
 - **The app carries everything it runs**: the companion Node (CLI and MCP), the Engine, the bundled Git subset, the Skill and the license files, in one layout every component finds through `packagedLayout`.
 - **One command** (`corepack pnpm run release:mac`) builds, packages, sets the fuses, signs every Mach-O with the team's Developer ID, checks the result statically and at runtime, notarizes and staples (with a notary profile), and makes the disk image.
+- **The Preview Host has its own identity.** It is its own executable beside the app's (`Contents/MacOS/Draft Tide Preview`), signed under its own identifier, so the Engine's desktop check rejects it. Release builds now render previews.
 
 The release run passes all ten checks, is notarized and stapled, and Gatekeeper accepts both the downloaded disk image and the app copied out of it. The signed app opened, and it passed the Engine's code-signature check and nonce handshake. Release builds compile in the release GitHub App (`draft-tide`), and Git's GPL source ships as an asset of the same GitHub Release.
 
-Still to come in M1-09: a GitHub round trip with the packaged app, the Preview Host as a separately signed helper, the diagnostics export, the clean-machine and usability gates, and the install / uninstall guide (see "What is left").
+Still to come in M1-09: the rest of the GitHub round trip with the packaged app (sign-in, connect and the first push passed), the diagnostics export, the clean-machine and usability gates, and the install / uninstall guide (see "What is left").
 
 ## What was built
 
@@ -19,17 +20,19 @@ Still to come in M1-09: a GitHub round trip with the packaged app, the Preview H
 | `apps/companion` | `scripts/build.ts`: release builds emit `cli.mjs` and the Engine SEA only (`dist/sea/`: the executable and `better_sqlite3.node`, `peer-identity.node`, `keychain.node` beside it); `--sea` builds a development SEA. The SEA is a CommonJS bundle of the Engine with better-sqlite3 inlined and its loader replaced (the addon only from beside the executable), a blob with `execArgv: ["--disable-sigusr1"]` and `execArgvExtension: "none"`, injected with postject into a copy of the running Node, ad-hoc signed for local use.<br>`src/engine/env-guard.ts` (imported first) and `environment.ts`: a release Engine exits with status 2, naming the variables, when anything outside the allowlist is present.<br>`src/engine/addons.ts`: every addon loads from beside the Engine executable in a SEA, or from `dist/native` in development, never from a path given at runtime.<br>`src/engine/host.ts`: the release Engine's Git is the bundled one, found from its own executable's place (`GIT_EXEC_PATH` always set).<br>`src/engine/main.ts`: no top-level await (a Node 24 SEA runs one CommonJS script).<br>`src/engine-launch.ts`: the release CLI and MCP server start the Engine executable of the same app |
 | `apps/desktop` | `scripts/build.ts`: a release mode (`dist-release/`, no companion paths, no source maps).<br>`src/main/engine.ts`, `app.ts`: release builds start `packagedLayout(resourcesPath).engine`; the agent setup card names the packaged Node, CLI and Skill, and every CLI line and MCP configuration now starts with `--disable-sigusr1`.<br>`scripts/package.ts` and `scripts/release/` (`config.ts`, `git.ts`, `sign.ts`, `verify.ts`, `notarize.ts`, `notices.ts`): the release pipeline below |
 | root | `release:mac` script; `.cache/` (pinned downloads) and `dist-release/` ignored |
-| `apps/companion/src/build-info.ts` | `RELEASE_GITHUB_APP`: the release GitHub App `draft-tide` (client ID `Iv23li5bVjuyY8pVqtz5`), compiled into release builds unless `DT_GITHUB_CLIENT_ID` / `DT_GITHUB_APP_SLUG` name another |
+| `apps/companion/src/build-info.ts` | `RELEASE_GITHUB_APP`: the release GitHub App `draft-tide` (client ID `Iv23li5bVjuyY8pVqtz5`), compiled into release builds unless `DT_GITHUB_CLIENT_ID` / `DT_GITHUB_APP_SLUG` name another.<br>`previewRenderer`: the renderer of the packaged Preview Host (`DT_PREVIEW_RENDERER` at build time), so the Engine caches previews under it before the first render |
+| The Preview Host's identity | engine-client: `packagedLayout(…).previewHost`, `Contents/MacOS/Draft Tide Preview` (`PREVIEW_HOST_EXECUTABLE`).<br>companion `src/engine/preview-host.ts`: a release Engine starts the Preview Host of its own app (found from its executable's place), under the compiled-in renderer, and never one named by the environment.<br>desktop `src/main/main.ts`: in a release the executable decides the role; the app's refuses `--dt-preview-host`, the Preview Host's runs nothing else.<br>`scripts/package.ts`: copies the app's executable to the Preview Host's place and reads the renderer from the Electron it packages; `release/sign.ts` signs it as `….preview-host` with JIT; `release/verify.ts` checks it (S3, S4, R2, R4, R5) |
 
 ## The pipeline
 
 `apps/desktop/scripts/package.ts`, in order:
 1. **Preflight.** macOS; the running Node must be relocatable, meaning it links only `/usr/lib` and `/System` (an official build, not Homebrew's), because it becomes both the companion Node and the base of the Engine SEA. The signing identity must be in the keychain.
-2. **Companion, release mode.** `DT_DESKTOP_APP_ID` and `DT_TEAM_ID` compile the desktop requirement into the Engine; the GitHub App goes in if given.
+2. **Companion, release mode.** `DT_DESKTOP_APP_ID` and `DT_TEAM_ID` compile the desktop requirement into the Engine; the GitHub App goes in if given; `DT_PREVIEW_RENDERER` (`electron/44.5.1 chromium/152.0.7977.130`, read from the Electron being packaged) names the Preview Host's renderer.
 3. **Desktop, release mode**, staged as a clean app directory: Main, preload, the GUI and a minimal `package.json`. No `node_modules`; Main is one bundle.
 4. **`@electron/packager`**: the bundle with `app.asar` and its integrity hash in `Info.plist`; helpers named `Draft Tide Helper …`.
-5. **Payload** into `Contents/Resources`, exactly `packagedLayout`:
-   - **The companion Node.** The running Node, with its `LICENSE`.
+5. **The Preview Host and the payload**, exactly `packagedLayout`:
+   - **The Preview Host.** A copy of the app's executable (Electron's 52 KB stub) at `Contents/MacOS/Draft Tide Preview`.
+   - **Into `Contents/Resources`: the companion Node.** The running Node, with its `LICENSE`.
    - **The CLI.** `cli.mjs`.
    - **The Engine.** The SEA with its three addons.
    - **Git.** Assembled from the pinned dugite-native tarball (SHA-256 checked, cached, resumable): `bin/git` and `git-remote-https`, two symlinks, Git's `COPYING` (pinned too) and `SOURCE.txt`, which names the sources asset below.
@@ -40,7 +43,7 @@ Still to come in M1-09: a GitHub round trip with the packaged app, the Preview H
    - **On.** Cookie encryption, embedded ASAR integrity, asar-only loading and the Wasm trap handlers.
 7. **Signing** with `@electron/osx-sign`, inside out, with explicit per-file options. Its defaults would have added camera, microphone, location and other entitlements, so every file gets its options from us:
    - **Common to every Mach-O.** Hardened runtime and a secure timestamp.
-   - **JIT only.** The app's executables and helpers, the companion Node and the Engine.
+   - **JIT only.** The app's executables (its own and the Preview Host's) and helpers, the companion Node and the Engine.
    - **No entitlements.** Git, the addons, frameworks and libraries.
    - **Identifiers.** The payload's own (below); bundles keep their `Info.plist` identifier.
 8. **Checks** (`release/verify.ts`); any failure stops the run before notarization.
@@ -59,6 +62,7 @@ Identifiers (default app id `app.drafttide.desktop`, overridable with `DT_DESKTO
 | Part | Identifier | Entitlements |
 |---|---|---|
 | The app | `app.drafttide.desktop` | JIT |
+| Preview Host | `app.drafttide.desktop.preview-host` | JIT |
 | Its helpers | `app.drafttide.desktop.helper…` (packager) | JIT |
 | Engine (SEA) | `app.drafttide.desktop.engine` | JIT |
 | Engine addons | `app.drafttide.desktop.engine.{better-sqlite3,peer-identity,keychain}` | none |
@@ -72,16 +76,39 @@ Identifiers (default app id `app.drafttide.desktop`, overridable with `DT_DESKTO
 |---|---|
 | S1 | `codesign --verify --deep --strict` on the bundle |
 | S2 | Every Mach-O (20) is signed by the team's Developer ID, with hardened runtime and a secure timestamp, and carries no `get-task-allow`, dyld variables or `disable-library-validation` |
-| S3 | The app, Node, Engine, addons and Git have the identifiers above; only the Node and the Engine have JIT |
-| S4 | The app satisfies the desktop requirement; the companion Node, the Engine and every helper fail it |
+| S3 | The app, the Preview Host, Node, Engine, addons and Git have the identifiers above; of these only the Preview Host, the Node and the Engine have JIT |
+| S4 | The app satisfies the desktop requirement; the Preview Host, the companion Node, the Engine and every helper fail it |
 | S5 | The Engine's designated requirement pins its identifier, the Developer ID markers and the team (what its keychain item trusts) |
 | S6 | The Engine carries the desktop requirement compiled in |
 | S7 | The fuses read back as set |
 | R1 | The signed Engine started with `NODE_EXTRA_CA_CERTS` exits with status 2, names it, and creates nothing in the data directory |
-| R2 | The packaged CLI on the packaged Node starts the signed Engine (`engine.info`: this version, `desktopIdentity: code-signature`); its log shows no missing Git, identity check or GitHub App (when one was given) |
+| R2 | The packaged CLI on the packaged Node starts the signed Engine (`engine.info`: this version, `desktopIdentity: code-signature`); its log shows no missing Git, identity check, GitHub App (when one was given) or Preview Host |
 | R3 | The bundled Git reports 2.53.0 and reaches `git-remote-https` through `GIT_EXEC_PATH` (an unreachable https address fails to connect, not "not a git command") |
+| R4 | The Preview Host, under the Engine's own supervisor (`createPreviewSupervisor`, the code the release Engine runs), renders a page whose script runs and tries the network: both PNGs have the expected sizes, the attempt is recorded as blocked, and the host reports the renderer compiled into the Engine. While it idles, the running process has its own identifier and fails the desktop requirement (`codesign --verify -R … <pid>`) |
+| R5 | The app's executable started with `--dt-preview-host` exits with status 2, and so does the Preview Host started without it |
+
+## The Preview Host's identity (spike)
+
+Until now the Preview Host was the app's own executable in another mode, so the M1-06 rule kept release builds without one: a page that escaped Chromium's renderer sandbox into the Preview Host's browser process would run as code the Engine's desktop check admits. The spike (2026-10-03) ran the Engine's real supervisor against variants of the signed release app, then checked the live host with `codesign --verify -R <desktop requirement> <pid>`:
+
+| Variant | Renders | Live host vs the desktop requirement | asar integrity |
+|---|---|---|---|
+| The app's executable with `--dt-preview-host` (before) | yes, 3.2 s cold | **satisfies it** (the hole) | checked |
+| **A.** A copy of the app's executable at `Contents/MacOS/Draft Tide Preview`, signed `….preview-host`, JIT | yes, 3.1 s cold | fails it | checked: a tampered `app.asar` header stops both executables (`Integrity check failed`) |
+| **B1.** A nested `Contents/Frameworks/Draft Tide Preview Helper.app` with Electron's helper executable | no: "This is a helper executable and cannot be launched directly" | — | — |
+| **B2.** The same nested bundle with the app's executable, rpath pointed at the outer `Frameworks` | the browser process starts, but every child dies with "Unable to find helper app" | — | would be skipped |
+
+Why B can't work as is: Electron 44 locates the framework, the helpers and `resourcesPath` from the executable's bundle (`MainApplicationBundlePath`); only an executable named `… Helper` resolves to the outer app. It also validates `app.asar` only when the archive is inside the bundle of the running executable (`Archive::RelativePath`), so a browser process in a nested bundle would load the outer `app.asar` unchecked. Variant A resolves everything as the app does and keeps the check.
+
+More findings on A:
+- **Not a second app.** The host is not registered with LaunchServices (`lsappinfo` finds no entry for its pid) and creates no keychain item (`Draft Tide Safe Storage` stays absent).
+- **The desktop identity can't be borrowed.** A copy of the app's executable that keeps the app's signature is killed at launch (`SIGKILL`) when it sits at `Contents/MacOS/Draft Tide Preview`, and fails static verification on its own (`invalid Info.plist`). So choosing the role by executable name is sound: whatever runs as the Preview Host is not the app's executable, and the app's executable refuses the role.
+- **Deep strict verification and notarization** accept an extra executable in `Contents/MacOS` (S1, and the notarized run below).
 
 ## Decisions taken here
+
+- **The Preview Host is a second executable in `Contents/MacOS`, not a nested helper app** (2026-10-03, from the spike above). It is Electron's stub copied at packaging time and signed `<app id>.preview-host` with JIT only. In a release Main chooses the role by executable: the app's never renders a page, whatever its arguments; the Preview Host's runs only the Preview Host, and only when started with the Engine's flag. Development and E2E builds keep one binary and the flag.
+- **The renderer is compiled into the Engine.** The packaging script reads it from the Electron it packages; R4 checks the packaged host reports the same, so cached previews are keyed correctly from the first render.
 
 - **@electron/packager, osx-sign and fuses directly, not Electron Forge.** These are the parts Forge runs underneath. Forge itself needs a hoisted node linker, a `pnpm` shim on `PATH` and an override for a git-hosted `node-gyp` under pnpm ([compatibility.md](compatibility.md)), and its DMG maker brings native modules to compile. `hdiutil` makes the disk image. The Windows installer (M2) can revisit Squirrel.
 - **Every file's signature is chosen, not defaulted.** osx-sign's default entitlements for an Electron app include camera, microphone, Bluetooth, location, photos and USB; nothing here uses them.
@@ -130,14 +157,11 @@ Notarized runs with the `draft-tide` notary profile, the final one with the rele
 
 The release GitHub App answers a device-flow request (Device Flow is on), and its page is public.
 
+**The packaged app against the real GitHub** (2026-10-03, by the owner, in the GUI of the notarized build): sign-in with the release GitHub App `draft-tide` (device flow), installing the app on an empty repository, connecting the project to it, and the first push all succeeded. Opening that project from GitHub in another folder has not been run with the packaged app yet.
+
 ## What is left in M1-09
 
-- **A GitHub round trip with the packaged app.** Sign in with the release app, install it on an empty repo, connect, push, then open the project from GitHub in another folder.
-- **The Preview Host's own identity.** Release builds still have no Preview Host (`PREVIEW_FAILED`, `no-renderer`). The plan:
-  - **The bundle.** A helper app inside the bundle (`Contents/Frameworks/Draft Tide Preview.app`, identifier `….preview-host`). Its executable is a copy of Electron's 34 KB main stub with an rpath to the outer frameworks, plus an asar holding only the Preview Host.
-  - **Signing.** It fails the desktop requirement.
-  - **Launch.** The Engine starts it from `packagedLayout`.
-  - **Unverified.** Electron's helper and resource lookup from a nested bundle needs a spike first.
+- **The rest of the GitHub round trip with the packaged app.** Sign-in, connecting and the first push passed (see Results); left: open the project from GitHub in another folder, save there, and pull that version back into the first folder.
 - **The diagnostics export, uninstall guide and usability gate**, and the clean-machine install (no Node, Git or developer tools, offline).
 - **The Engine opening the app** for a request (its location is now fixed).
 - **An app icon** (the build uses Electron's).
