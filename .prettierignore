@@ -7,5 +7,7 @@ spikes/
 pnpm-lock.yaml
 **/dist/
 **/dist-e2e/
+**/dist-release/
+**/.cache/
 **/out/
 **/test-results/
