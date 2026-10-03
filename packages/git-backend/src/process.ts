@@ -251,3 +251,14 @@ export async function* streamGit(
     if (!finished && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
   }
 }
+
+// The version of the Git this runtime runs ("2.53.0"), for diagnostics; null
+// when it can't be started or says something else.
+export async function gitVersion(rt: GitRuntime): Promise<string | null> {
+  try {
+    const r = await runGit(rt, ['--version'], rt.homeDir, { maxOutputBytes: 4096, timeoutMs: 10_000 });
+    return /^git version (\d+\.\d+\.\d+)/.exec(r.stdout.toString('utf8'))?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}

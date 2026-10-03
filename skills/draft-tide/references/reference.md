@@ -52,7 +52,7 @@ Not offered to agents, by design: turning agent access on, reviewing and connect
 | `HISTORY_CHANGED` | The branch moved meanwhile | Retry; nothing overwritten |
 | `UNSUPPORTED_ENTRY` / `SCOPE_CHANGED` / `PATH_OUTSIDE_ROOT` | Something in scope can't be saved as it is | Report the paths and reasons; don't delete anything |
 | `INSUFFICIENT_DISK_SPACE` / `STORAGE_IO_FAILED` / `RESOURCE_BUDGET_EXCEEDED` | Local resources | Report; `details` names the budget |
-| `CONFIRMATION_REQUIRED` | Only the designer can do this, in the app | Follow `details.operationId` with `operation_status` |
+| `CONFIRMATION_REQUIRED` | Only the designer can do this, in the app; `details.app` says whether the app came forward (`shown`), is opening (`opening`) or must be opened by the designer (`unavailable`) | Follow `details.operationId` with `operation_status` |
 | `APPROVAL_DENIED` | The designer declined | Say so; don't ask again on your own |
 | `CANCELLED` | Stopped at a safe boundary; nothing further changed | Report |
 | `PLAN_STALE` | Files changed since the plan | Plan again |

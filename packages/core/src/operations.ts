@@ -1,6 +1,7 @@
 import {
   DtError,
   MAX_PENDING_REQUESTS,
+  type AppAttention,
   OperationId,
   type GitHubUser,
   type OperationCancelResult,
@@ -15,7 +16,7 @@ import {
 } from '@draft-tide/contracts';
 import type { ProjectContext } from './context.ts';
 import { PROJECT_OPERATION_KINDS, REQUEST_KINDS, isOpen, isRequestKind, operationStatusOf } from './journal.ts';
-import type { OperationRecord } from './ports.ts';
+import type { DesktopApp, OperationRecord } from './ports.ts';
 
 // Operation status and cancel for every channel, and the requests the tool
 // channel may make for what only the app does (M1 plan §9.1, §11.1). Draft
@@ -62,7 +63,16 @@ const OPEN_STATES: OperationState[] = [
 // suggestion until the user picks it.
 const ABSOLUTE = /^(?:\/|[A-Za-z]:[\\/]|\\\\)/;
 
-export function createOperationService(ctx: ProjectContext): OperationService {
+// Where the request is, as the requester is told.
+const WHERE: Record<AppAttention, string> = {
+  shown: 'The request is waiting in the Draft Tide app, which is open',
+  opening: 'The Draft Tide app is opening with the request',
+  unavailable: 'The request waits in the Draft Tide app until the user opens it',
+};
+
+// app: the desktop app of this installation, which a request brings forward
+// or opens (M1 plan §5). Without it the request only waits.
+export function createOperationService(ctx: ProjectContext, options: { app?: DesktopApp } = {}): OperationService {
   const { store, journal } = ctx;
 
   function get(operationId: OperationId): OperationRecord {
@@ -99,10 +109,19 @@ export function createOperationService(ctx: ProjectContext): OperationService {
     const operationId = OperationId.parse(crypto.randomUUID());
     journal.begin({ operationId, projectId, kind: j.kind, origin, state: 'awaiting-user', journal: j });
     changed();
+    // The app's screen for it: an open app comes forward on the event, a
+    // closed one is started. The answer is the user's either way.
+    ctx.publish({ name: 'request.waiting', operationId });
+    let app: AppAttention = 'unavailable';
+    try {
+      app = options.app?.attend() ?? 'unavailable';
+    } catch {
+      // Opening the app is a courtesy; the request stands.
+    }
     throw new DtError(
       'CONFIRMATION_REQUIRED',
-      `Only the user can ${what}. The request is waiting in the Draft Tide app; follow it with operation.status.`,
-      { operationId, operation },
+      `Only the user can ${what}. ${WHERE[app]}; follow it with operation.status.`,
+      { operationId, operation, app },
     );
   }
 

@@ -19,6 +19,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { _electron as electron, type ElectronApplication, type Page } from 'playwright-core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { DiagnosticsReport } from '@draft-tide/contracts';
 import { makePng } from '../../companion/test/png.ts';
 import { buildDesktop } from '../scripts/build.ts';
 
@@ -28,7 +29,6 @@ const companionCli = join(root, '..', 'companion', 'dist', 'cli.mjs');
 const shots = join(root, 'test-results');
 
 const dataDir = mkdtempSync(join(tmpdir(), 'dt-e2e-'));
-const userDataDir = mkdtempSync(join(tmpdir(), 'dt-e2e-ud-'));
 let app: ElectronApplication;
 let page: Page;
 
@@ -67,7 +67,9 @@ beforeAll(async () => {
   mkdirSync(shots, { recursive: true });
   app = await electron.launch({
     executablePath: electronPath,
-    args: [join(root, 'dist-e2e', 'main', 'main.mjs'), `--user-data-dir=${userDataDir}`],
+    // No --user-data-dir: the app keeps its Chromium profile in the data
+    // directory's desktop/ folder (checked below).
+    args: [join(root, 'dist-e2e', 'main', 'main.mjs')],
     env: {
       ...(process.env as Record<string, string>),
       DRAFT_TIDE_DATA_DIR: dataDir,
@@ -87,7 +89,6 @@ afterAll(async () => {
     // Already gone.
   }
   rmSync(dataDir, { recursive: true, force: true });
-  rmSync(userDataDir, { recursive: true, force: true });
   rmSync(designDir, { recursive: true, force: true });
 });
 
@@ -101,6 +102,14 @@ describe('desktop app', () => {
     expect(await page.getByRole('button', { name: /從 GitHub 開啟/ }).isEnabled()).toBe(true);
     expect(await page.getByRole('button', { name: /開啟設計資料夾/ }).isEnabled()).toBe(true);
     await page.screenshot({ path: join(shots, 'projects.png') });
+    // Chromium's profile is in its own subfolder of the data directory,
+    // never beside the Engine's state.
+    expect(await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'))).toBe(
+      join(dataDir, 'desktop'),
+    );
+    await expect.poll(() => readdirSync(join(dataDir, 'desktop')).length).toBeGreaterThan(0);
+    const engineFiles = new Set(['desktop', 'diagnostics', 'git-home', 'projects', 'runtime', 'tmp']);
+    expect(readdirSync(dataDir).filter((f) => !engineFiles.has(f) && !f.startsWith('state.sqlite'))).toEqual([]);
   });
 
   it('gives the renderer no Node and only the bridge', async () => {
@@ -126,11 +135,13 @@ describe('desktop app', () => {
         'chooseFolder',
         'connectionState',
         'copyText',
+        'exportDiagnostics',
         'invoke',
         'onConnection',
         'onEvent',
         'openExternal',
         'reconnect',
+        'revealDiagnostics',
       ],
       unknownOp: 'UNKNOWN_OPERATION',
       badInput: 'INVALID_ARGUMENT',
@@ -431,8 +442,14 @@ describe('restore, recovery and agent requests (M1-05)', () => {
   it('shows an agent’s request to connect a folder; the user declines one and answers another', async () => {
     await setAgentAccess(true);
     writeFileSync(join(requested, 'index.html'), '<h1>requested</h1>\n');
+    // The window comes forward with the request.
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.hide());
     const first = cliEnvelope('init', 'request', '--root', requested, '--name', 'Requested');
     expect(first.error?.code).toBe('CONFIRMATION_REQUIRED');
+    expect(first.error?.details['app']).toBe('shown');
+    await expect
+      .poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isVisible() ?? false))
+      .toBe(true);
     const firstId = String(first.error?.details['operationId']);
     await nav('專案').click();
     const banner = page.getByRole('status').filter({ hasText: `Agent 請求連接資料夾：${requested}` });
@@ -702,6 +719,47 @@ setTimeout(() => { location.href = 'https://example.com/away'; }, 50);
     // None of the old files stay (one the app asks for again is made anew).
     const kept = readdirSync(cache).filter((f) => before.includes(f) && statSync(join(cache, f)).mtimeMs < clicked);
     expect(kept).toEqual([]);
+  });
+});
+
+describe('設定與診斷: storage and diagnostics', () => {
+  it('shows what Draft Tide takes, and saves a de-identified diagnostics report', async () => {
+    await nav('設定與診斷').click();
+    const storage = page.getByRole('region', { name: '容量' });
+    await storage.getByText('各專案的歷史').waitFor();
+    await storage.getByText('Pricing page').waitFor();
+    await storage
+      .getByText(/^歷史 /)
+      .first()
+      .waitFor();
+    const out = join(mkdtempSync(join(tmpdir(), 'dt-e2e-diag-')), 'report.json');
+    await app.evaluate(({ dialog }, file) => {
+      dialog.showSaveDialog = () => Promise.resolve({ canceled: false, filePath: file });
+    }, out);
+    const card = page.getByRole('region', { name: '診斷資訊' });
+    await card.getByRole('button', { name: '匯出診斷資訊…' }).click();
+    await card.getByText('已儲存「report.json」', { exact: false }).waitFor();
+    const text = readFileSync(out, 'utf8');
+    const report = DiagnosticsReport.parse(JSON.parse(text));
+    expect(report.projects.length).toBeGreaterThan(0);
+    const ids = await page.evaluate(async () => {
+      const w = globalThis as unknown as {
+        draftTide: { invoke(op: string, payload: unknown): Promise<{ data: { projectId: string }[] }> };
+      };
+      return (await w.draftTide.invoke('project.list', {})).data.map((p) => p.projectId);
+    });
+    expect(ids.length).toBeGreaterThan(0);
+    for (const secret of [designDir, dataDir, 'Pricing page', ...ids]) expect(text, secret).not.toContain(secret);
+    await card.getByText('檢視內容').click();
+    await card.getByText('"draft-tide-diagnostics"', { exact: false }).waitFor();
+    await page.screenshot({ path: join(shots, 'settings-diagnostics.png'), fullPage: true });
+    // Cancelling the dialog saves nothing and says nothing went wrong.
+    await app.evaluate(({ dialog }) => {
+      dialog.showSaveDialog = () => Promise.resolve({ canceled: true, filePath: '' });
+    });
+    await card.getByRole('button', { name: '匯出診斷資訊…' }).click();
+    await expect.poll(() => card.getByRole('alert').count()).toBe(0);
+    rmSync(dirname(out), { recursive: true, force: true });
   });
 });
 

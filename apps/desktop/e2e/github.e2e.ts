@@ -20,7 +20,6 @@ const electronPath = createRequire(import.meta.url)('electron') as unknown as st
 const shots = join(root, 'test-results');
 
 const dataDir = mkdtempSync(join(tmpdir(), 'dt-e2e-gh-'));
-const userDataDir = mkdtempSync(join(tmpdir(), 'dt-e2e-gh-ud-'));
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'dt-e2e-gh-work-')));
 const designDir = join(scratch, 'design');
 const gitConfig = join(scratch, 'gitconfig');
@@ -66,7 +65,7 @@ beforeAll(async () => {
   write(designDir, 'index.html', '<h1>Pricing</h1>\n');
   app = await electron.launch({
     executablePath: electronPath,
-    args: [join(root, 'dist-e2e', 'main', 'main.mjs'), `--user-data-dir=${userDataDir}`],
+    args: [join(root, 'dist-e2e', 'main', 'main.mjs')],
     env: {
       ...(process.env as Record<string, string>),
       DRAFT_TIDE_DATA_DIR: dataDir,
@@ -88,7 +87,7 @@ afterAll(async () => {
     // Already gone.
   }
   await gh?.close();
-  for (const d of [dataDir, userDataDir, scratch]) rmSync(d, { recursive: true, force: true });
+  for (const d of [dataDir, scratch]) rmSync(d, { recursive: true, force: true });
 });
 
 describe('GitHub in the app', () => {

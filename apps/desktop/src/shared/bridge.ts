@@ -1,7 +1,7 @@
 // The whole surface the preload exposes to the GUI as `window.draftTide`.
 // Main checks the sender frame and that `op` is a desktop operation before
 // anything reaches the Engine.
-import type { EngineEvent, Envelope } from '@draft-tide/contracts';
+import type { DiagnosticsReport, EngineEvent, Envelope, ErrorInfo } from '@draft-tide/contracts';
 
 export type ConnectionState =
   { status: 'connecting' } | { status: 'connected'; instanceId: string } | { status: 'unavailable'; message: string };
@@ -26,6 +26,14 @@ export interface AgentSetup {
   dataDir: string | null;
 }
 
+// A diagnostics export (設定與診斷): Main asks the Engine for the report and
+// writes it where the user chose in the native save dialog. The report comes
+// back so the app can show exactly what was saved.
+export type DiagnosticsExport =
+  | { status: 'saved'; fileName: string; report: DiagnosticsReport }
+  | { status: 'cancelled' }
+  | { status: 'failed'; error: ErrorInfo };
+
 export interface DraftTideBridge {
   invoke(op: string, payload: unknown): Promise<Envelope<unknown>>;
   // The native folder picker. A folder chosen here (and only one chosen here)
@@ -40,6 +48,11 @@ export interface DraftTideBridge {
   // clipboard.
   copyText(text: string): Promise<boolean>;
   agentSetup(): Promise<AgentSetup | null>;
+  // Saves a de-identified diagnostics report through the native save dialog.
+  // The renderer never supplies its content or its path.
+  exportDiagnostics(): Promise<DiagnosticsExport | null>;
+  // Shows the last report saved in this run in Finder (the file manager).
+  revealDiagnostics(): Promise<boolean>;
   connectionState(): Promise<ConnectionState>;
   reconnect(): Promise<ConnectionState>;
   onEvent(listener: (e: BridgeEvent) => void): () => void;
@@ -52,6 +65,8 @@ export const IPC = {
   openExternal: 'dt:open-external',
   copyText: 'dt:copy-text',
   agentSetup: 'dt:agent-setup',
+  exportDiagnostics: 'dt:export-diagnostics',
+  revealDiagnostics: 'dt:reveal-diagnostics',
   connectionState: 'dt:connection-state',
   reconnect: 'dt:reconnect',
   event: 'dt:event',

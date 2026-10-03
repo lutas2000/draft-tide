@@ -275,6 +275,20 @@ export function openGitRepo(rt: GitRuntime, root: string, options: OpenGitRepoOp
       }
       return found;
     },
+
+    // `count-objects -v`: the loose objects, the packs and any garbage, each
+    // in KiB. Nothing is written.
+    async objectStoreSize(signal?: AbortSignal) {
+      const r = await run(['count-objects', '-v'], { signal, maxOutputBytes: 64 * 1024 });
+      const text = r.stdout.toString('utf8');
+      let kib = 0;
+      for (const key of ['size', 'size-pack', 'size-garbage']) {
+        const m = new RegExp(`^${key}: (\\d+)$`, 'm').exec(text);
+        if (!m && key !== 'size-garbage') throw new DtError('GIT_FAILED', 'unexpected count-objects output');
+        kib += Number(m?.[1] ?? 0);
+      }
+      return kib * 1024;
+    },
   };
   const remote: GitRemote =
     options.scratchGitDir !== undefined

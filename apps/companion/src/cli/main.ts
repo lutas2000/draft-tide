@@ -60,8 +60,6 @@ const HINTS: Partial<Record<ErrorCode, string>> = {
   SNAPSHOT_NOT_FOUND: 'Use a snapshot id or commit id from `draft-tide --project <id> history`.',
   PLAN_STALE: 'Files changed since the plan was made. Make a new plan and check it again.',
   UNTRACKED_FILES: 'Files no version holds are in the way. Move them, or save them first, then plan again.',
-  CONFIRMATION_REQUIRED:
-    'Only the user can do this, in the Draft Tide app. Follow the request with `draft-tide operation status <id>`.',
   APPROVAL_DENIED: 'The user declined the request in the Draft Tide app.',
   CANCELLED: 'The operation was cancelled before it changed anything.',
   PREVIEW_UNSUPPORTED: 'This version has nothing Draft Tide can preview (see details.reason). The version is fine.',
@@ -74,6 +72,17 @@ const HINTS: Partial<Record<ErrorCode, string>> = {
   NETWORK_UNAVAILABLE: 'GitHub could not be reached. Your versions are safe here; try again later.',
   UNSAVED_CHANGES: 'Save a version first (`snapshot`), then get the updates.',
 };
+
+// CONFIRMATION_REQUIRED: where the request waits (details.app).
+function requestHint(app: unknown): string {
+  const where =
+    app === 'shown'
+      ? 'The Draft Tide app is open and shows the request.'
+      : app === 'opening'
+        ? 'The Draft Tide app is opening with the request.'
+        : 'Open the Draft Tide app to answer it.';
+  return `Only the user can do this, in the Draft Tide app. ${where} Follow the request with \`draft-tide operation status <id>\`.`;
+}
 
 // Text from Git or file names, safe to print on a terminal: no escape
 // sequences or line breaks.
@@ -88,7 +97,10 @@ function emit(envelope: Envelope<unknown>, render: (data: never) => string): voi
   } else if (envelope.ok) {
     process.stdout.write(render(envelope.data as never));
   } else if (envelope.error) {
-    const hint = HINTS[envelope.error.code];
+    const hint =
+      envelope.error.code === 'CONFIRMATION_REQUIRED'
+        ? requestHint(envelope.error.details['app'])
+        : HINTS[envelope.error.code];
     const id = envelope.error.details['operationId'];
     const ref = typeof id === 'string' ? `Operation: ${id}\n` : '';
     process.stderr.write(

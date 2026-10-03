@@ -7,6 +7,7 @@ import {
   HostFrameDecoder,
   encodeFrame,
   encodeHostFrame,
+  desktopProfileDir,
   runtimePaths,
 } from '../src/index.ts';
 
@@ -62,6 +63,15 @@ describe('runtimePaths', () => {
 
   it('uses a per-data-store named pipe on Windows', () => {
     expect(runtimePaths('C:\\Users\\a\\dt', 'win32').socket).toMatch(/^\\\\\.\\pipe\\draft-tide-[0-9a-f]{24}$/);
+  });
+
+  it("keeps the app's Chromium profile in a subfolder of the data directory", () => {
+    expect(desktopProfileDir('/Users/a/Library/Application Support/Draft Tide', 'darwin')).toBe(
+      '/Users/a/Library/Application Support/Draft Tide/desktop',
+    );
+    expect(desktopProfileDir('C:\\Users\\a\\AppData\\Roaming\\Draft Tide', 'win32')).toBe(
+      'C:\\Users\\a\\AppData\\Roaming\\Draft Tide\\desktop',
+    );
   });
 });
 

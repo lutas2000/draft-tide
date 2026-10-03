@@ -196,6 +196,30 @@ export type OperationList = z.infer<typeof OperationList>;
 // CONFIRMATION_REQUIRED with an operation id to follow (operation.status).
 export const MAX_PENDING_REQUESTS = 20;
 
+// What the Engine did about the app when it recorded a request
+// (CONFIRMATION_REQUIRED details.app; M1 plan §5, §9.1):
+//   shown        the app is open: its window comes forward with the request
+//   opening      the app wasn't open: the Engine started it (the app of the
+//                same installation, found from the Engine's own place)
+//   unavailable  the Engine can't open the app here (a development Engine
+//                with no app to start, or starting it failed): the request
+//                waits until the user opens the app
+// Either way the request waits in the app; nothing is done for the user.
+export const APP_ATTENTION = ['shown', 'opening', 'unavailable'] as const;
+export const AppAttention = z.enum(APP_ATTENTION);
+export type AppAttention = z.infer<typeof AppAttention>;
+
+// Development builds only: how the Engine starts the app for a request, as
+// JSON {command, args}. The desktop app sets it for the Engine it starts and
+// the CLI passes it on. A release Engine opens the app it ships in
+// (packagedLayout) and refuses this variable (its environment allowlist).
+export const APP_LAUNCH_ENV = 'DRAFT_TIDE_APP';
+export const AppLaunch = z.strictObject({
+  command: z.string().min(1).max(4096),
+  args: z.array(z.string().max(4096)).max(8),
+});
+export type AppLaunch = z.infer<typeof AppLaunch>;
+
 export const ConnectRequestInput = z.strictObject({
   root: FolderPath,
   name: ProjectName.optional(),

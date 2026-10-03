@@ -1,5 +1,6 @@
 export * from './canonical-json.ts';
 export * from './catalog.ts';
+export * from './diagnostics.ts';
 export * from './engine.ts';
 export * from './envelope.ts';
 export * from './errors.ts';

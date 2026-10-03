@@ -330,7 +330,10 @@ describe('what capture refuses', () => {
     expect(err.details['reason']).toBe('attribute-filter');
     expect(existsSync(marker)).toBe(false);
     // Control (the filter runs through sh): the user's own `git add` runs it.
+    // Changed content, so Git must hash the file: an unchanged one is skipped
+    // unless its index entry happens to be racily clean.
     if (!onWindows) {
+      write(root, 'index.html', 'changed');
       plainGit(root, ['add', 'index.html']);
       expect(existsSync(marker)).toBe(true);
     }

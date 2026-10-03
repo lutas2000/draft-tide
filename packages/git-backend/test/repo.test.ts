@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DEFAULT_EXCLUDE_DIR_NAMES, DEFAULT_EXCLUDE_FILE_PATTERNS, DtError } from '@draft-tide/contracts';
@@ -7,6 +8,7 @@ import {
   createScratchGitDir,
   gitEnvironment,
   gitTrace,
+  gitVersion,
   openGitRepo,
   runGit,
   type GitRuntime,
@@ -163,6 +165,23 @@ describe('listings', () => {
     await expect(openGitRepo(rt, root).existingBlobs(['HEAD'])).rejects.toThrow('invalid object id');
   });
 
+  it('measures the object store, loose objects and packs, writing nothing', async () => {
+    // Random bytes don't compress, loose or packed, so the store holds at
+    // least this much on every platform (Windows Git counts bytes, not disk
+    // blocks, in whole KiB).
+    const root = committedRepo({ 'a.txt': 'hello\n', 'big.bin': randomBytes(64 * 1024) });
+    const repo = openGitRepo(rt, root);
+    const loose = await repo.objectStoreSize();
+    expect(loose).toBeGreaterThanOrEqual(64 * 1024);
+    expect(loose % 1024).toBe(0);
+    plainGit(root, ['gc', '--quiet']);
+    const packed = await repo.objectStoreSize();
+    expect(packed).toBeGreaterThanOrEqual(64 * 1024);
+    const before = digestTree(join(root, '.git'));
+    await repo.objectStoreSize();
+    expect(digestTree(join(root, '.git'))).toEqual(before);
+  });
+
   it('writes nothing while listing', async () => {
     const root = committedRepo({ 'a.txt': 'a', '.gitattributes': '*.txt text\n' });
     write(root, 'a.txt', 'changed');
@@ -296,6 +315,8 @@ describe('runGit', () => {
     const err = await dtError(runGit(bad, ['--version'], tempDir()));
     expect(err.code).toBe('GIT_FAILED');
     expect(err.details['reason']).toBe('git-unavailable');
+    expect(await gitVersion(bad)).toBeNull();
+    expect(await gitVersion(rt)).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
   it('reports a failing command with its exit code', async () => {

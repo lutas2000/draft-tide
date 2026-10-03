@@ -90,7 +90,7 @@ export function machOFiles(dir: string, acc: string[] = []): string[] {
 
 export function staticChecks(
   app: string,
-  options: { teamId: string; ids: ReleaseIdentifiers; desktopRequirement: string },
+  options: { teamId: string; ids: ReleaseIdentifiers; desktopRequirement: string; icon: string },
 ): Check[] {
   const checks: Check[] = [];
   const { teamId, ids } = options;
@@ -189,7 +189,19 @@ export function staticChecks(
     ok: quoted.some((q) => engineBytes.includes(q)),
     details: { requirement: options.desktopRequirement },
   });
+  checks.push(iconCheck(app, options.icon));
   return checks;
+}
+
+// S8: the icon Info.plist names is Draft Tide's (assets/icon.icns), not
+// Electron's. Signing seals Resources, so this holds for what ships.
+export function iconCheck(app: string, icon: string): Check {
+  const plist = readFileSync(join(app, 'Contents', 'Info.plist'), 'utf8');
+  const named = /<key>CFBundleIconFile<\/key>\s*<string>([^<]+)<\/string>/.exec(plist)?.[1] ?? null;
+  const file =
+    named === null ? null : join(app, 'Contents', 'Resources', named.endsWith('.icns') ? named : `${named}.icns`);
+  const ok = file !== null && existsSync(file) && readFileSync(file).equals(readFileSync(icon));
+  return { id: 'S8', description: "the app's icon is Draft Tide's (assets/icon.icns)", ok, details: { named } };
 }
 
 export async function fuseCheck(app: string): Promise<Check> {

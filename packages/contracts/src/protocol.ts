@@ -135,6 +135,9 @@ export const EngineEvent = z.discriminatedUnion('name', [
   // Agent requests, notices or operations needing recovery came or went:
   // re-read operation.list.
   z.strictObject({ name: z.literal('operations.changed') }),
+  // An agent asked for something only the user does in the app (a request in
+  // operation.list): the app brings its window forward.
+  z.strictObject({ name: z.literal('request.waiting'), operationId: OperationId }),
   // Sign-in changed: re-read auth.status. login says how a device login the
   // app started ended.
   z.strictObject({ name: z.literal('auth.changed'), login: LoginOutcome.nullable() }),

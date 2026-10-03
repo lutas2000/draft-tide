@@ -13,6 +13,7 @@ import {
 } from '@draft-tide/contracts';
 import { createAuthService } from './auth.ts';
 import { createProjectContext, type ProjectServiceOptions } from './context.ts';
+import { createDiagnosticsService } from './diagnostics.ts';
 import { createOpenService } from './open.ts';
 import { createOperationService } from './operations.ts';
 import { authorize } from './policy.ts';
@@ -69,7 +70,7 @@ export function createEngineCore(
   const recovery = createRecoveryService(ctx);
   const projects = createProjectService(ctx, recovery);
   const restore = createRestoreService(ctx, recovery);
-  const operations = createOperationService(ctx);
+  const operations = createOperationService(ctx, ports.app ? { app: ports.app } : {});
   const previews = createPreviewService(ctx, ports.previews, previewOptions);
   const sync = createSyncService(ctx);
   const pull = createPullService(ctx, recovery, sync);
@@ -80,6 +81,14 @@ export function createEngineCore(
       // Pushes that waited for a sign-in.
       sync.resume();
     },
+  });
+  const diagnostics = createDiagnosticsService(ctx, {
+    identity,
+    host: ports.diagnostics,
+    projects,
+    sync,
+    auth,
+    previews,
   });
 
   const handlers: Handlers = {
@@ -180,6 +189,8 @@ export function createEngineCore(
       previews.warm(result.project.projectId, result.tip.snapshotId ?? result.tip.commit);
       return result;
     },
+    'diagnostics.usage': () => diagnostics.usage(),
+    'diagnostics.report': () => diagnostics.report(),
     'agentAccess.get': () => store.getAgentAccess(),
     'agentAccess.set': (input) => {
       const current = store.getAgentAccess();

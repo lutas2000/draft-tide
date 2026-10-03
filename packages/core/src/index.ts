@@ -2,6 +2,7 @@ export * from './auth.ts';
 export * from './capture.ts';
 export * from './compare.ts';
 export * from './context.ts';
+export * from './diagnostics.ts';
 export * from './engine-core.ts';
 export * from './history.ts';
 export * from './image-info.ts';

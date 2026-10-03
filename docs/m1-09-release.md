@@ -1,4 +1,4 @@
-# M1-09: Alpha release — packaging and signing (part 1)
+# M1-09: Alpha release — packaging and signing (part 1); diagnostics, opening the app, the icon (part 2)
 
 Date: 2026-10-03 · Machine: macOS 27.0.1, Apple Silicon (arm64), Xcode 27.0, Node 24.18.1 (official build), Electron 44.5.1 · Work package: M1-09 ([M1 plan §12](../.ref/M1_IMPLEMENTATION_PLAN.md))
 
@@ -10,7 +10,9 @@ M1-09 turns the M1 build into an installable alpha. This first part builds the m
 
 The release run passes all twelve checks, is notarized and stapled, and Gatekeeper accepts both the downloaded disk image and the app copied out of it. The signed app opened, and it passed the Engine's code-signature check and nonce handshake. Release builds compile in the release GitHub App (`draft-tide`), and Git's GPL source ships as an asset of the same GitHub Release.
 
-Still to come in M1-09: the rest of the GitHub round trip with the packaged app (sign-in, connect and the first push passed), the diagnostics export, the clean-machine and usability gates, and the install / uninstall guide (see "What is left").
+Part 2 ([below](#part-2-diagnostics-the-apps-own-folder-opening-the-app-the-icon)) adds the storage view and the de-identified diagnostics export in 設定與診斷, moves the app's Chromium profile into its own folder of the data directory, lets the Engine open the app when an agent asks for something only the user does, and gives the app its icon.
+
+Still to come in M1-09: the rest of the GitHub round trip with the packaged app (sign-in, connect and the first push passed), a release run with part 2, the clean-machine and usability gates, and the install / uninstall guide (see "What is left").
 
 ## What was built
 
@@ -81,6 +83,7 @@ Identifiers (default app id `app.drafttide.desktop`, overridable with `DT_DESKTO
 | S5 | The Engine's designated requirement pins its identifier, the Developer ID markers and the team (what its keychain item trusts) |
 | S6 | The Engine carries the desktop requirement compiled in |
 | S7 | The fuses read back as set |
+| S8 | The icon `Info.plist` names is Draft Tide's (`assets/icon.icns`), byte for byte (part 2; not yet run on a signed build) |
 | R1 | The signed Engine started with `NODE_EXTRA_CA_CERTS` exits with status 2, names it, and creates nothing in the data directory |
 | R2 | The packaged CLI on the packaged Node starts the signed Engine (`engine.info`: this version, `desktopIdentity: code-signature`); its log shows no missing Git, identity check, GitHub App (when one was given) or Preview Host |
 | R3 | The bundled Git reports 2.53.0 and reaches `git-remote-https` through `GIT_EXEC_PATH` (an unreachable https address fails to connect, not "not a git command") |
@@ -165,16 +168,134 @@ The release GitHub App answers a device-flow request (Device Flow is on), and it
 
 **The packaged app against the real GitHub** (2026-10-03, by the owner, in the GUI of the notarized build): sign-in with the release GitHub App `draft-tide` (device flow), installing the app on an empty repository, connecting the project to it, and the first push all succeeded. Opening that project from GitHub in another folder has not been run with the packaged app yet.
 
+## Part 2: diagnostics, the app's own folder, opening the app, the icon
+
+Date: 2026-10-03 · Machine: a Linux x86_64 container (no Mac), Node 24.21.0, Electron 44.5.1 under Xvfb, Git 2.53.0 (dugite-native's Linux build) · Same work package.
+
+Part 2 closes four items part 1 left:
+- **The app's Chromium profile has its own folder.** Electron's `userData` was the default data store itself, so Chromium's files sat beside `state.sqlite`. It is now `<data>/desktop/`, for whichever data store the window uses.
+- **設定與診斷 shows storage use and exports diagnostics.** A 容量 card shows the data directory by part, each project's history and the free space where each lives. A 診斷資訊 card saves a de-identified report where the user chooses, and shows what was saved. Draft Tide sends nothing itself.
+- **The Engine opens the app for a request.** When the tool channel asks for something only the user does (connect a folder, sign in, connect a repository), an open app comes forward. A closed one is started: the release Engine opens the app bundle it ships in. The answer's `details.app` says which happened.
+- **The app has its icon**: the GUI's mark on Apple's icon grid, in place of Electron's.
+
+Everything here was built and tested in a Linux container: the unit and integration tests, and the Electron E2E under Xvfb. What only a Mac shows has not run yet: `open -n -a`, the Dock, the icon in Finder, and S8 on a signed build. The next release run covers them (see "What is left").
+
+### What was built (part 2)
+
+| Module | Contents |
+|---|---|
+| `packages/contracts` | `diagnostics.ts`: `StorageUsage` (the data directory by part, each project's history and free space) and `DiagnosticsReport`, a strict schema of labels, states, codes and sizes plus the redacted log tail. Two catalog operations, for the app only (`tool: none`): `diagnostics.usage` and `diagnostics.report`.<br>`operation.ts`: `AppAttention` (`shown`, `opening`, `unavailable`: `details.app` of `CONFIRMATION_REQUIRED`) and `APP_LAUNCH_ENV` (`DRAFT_TIDE_APP`, development builds only).<br>`protocol.ts`: the `request.waiting` event |
+| `packages/core` | `diagnostics.ts`: the usage, the report, `createLabeler` and `createRedactor`.<br>`ports.ts`: `DiagnosticsHost`, `DesktopApp`, and `GitRepo.objectStoreSize`.<br>`operations.ts`: a recorded request publishes `request.waiting`, then asks `DesktopApp.attend()`; the error's message and `details.app` say where the request waits. Attending can't fail a request.<br>`projects.ts`: `status(…, { changes: false })` reads no file of the folder |
+| `packages/git-backend` | `objectStoreSize()` (`count-objects -v`: loose, packed and garbage) and `gitVersion()` |
+| `packages/adapter-filesystem` | `measureTree()`: bytes by part, never through a link, at most 200,000 entries (`complete: false` beyond) |
+| `packages/engine-client` | `desktopProfileDir()` (`<data>/desktop`), and `packagedLayout(…).app`: the app bundle on macOS, its executable elsewhere |
+| `apps/companion` | `src/engine/diagnostics.ts`: the Engine's `DiagnosticsHost` (the data directory by part, its free space, the log tail, the OS release and Git's version, and the values private to this computer).<br>`src/engine/desktop-app.ts`: which app to open, how, and at most once per 30 s.<br>`server.ts`: `desktopSessionCount()`.<br>The CLI forwards `DRAFT_TIDE_APP` to an Engine it starts, and its `CONFIRMATION_REQUIRED` hint follows `details.app`. The MCP instructions, the Skill and its reference name `details.app` |
+| `apps/desktop` | Main: `userData`, `sessionData` and `crashDumps` in `desktopProfileDir`, set before the single-instance lock. `request.waiting` and a second instance bring the window forward; a second instance also reconnects at once. The diagnostics export uses the native save dialog; Main fetches the report itself and checks it against the schema. A development Engine is told to start this same build for a request.<br>GUI: the 容量 and 診斷資訊 cards replace the "尚未提供" placeholder; clearing the preview cache refreshes the storage numbers.<br>`assets/icon.svg`, `assets/icon.icns`, `scripts/make-icon.ts` (`run icon`), the packager's `icon`, check S8 |
+
+### The app's own folder
+
+Electron's `userData` and `sessionData` defaulted to `~/Library/Application Support/<productName>`, which is the default data store. Main now sets both to `<data>/desktop` (created 0700), and crash dumps to `desktop/Crashpad`. It does this before anything reads the paths, the single-instance lock included. As a result:
+- **What the data directory holds.** Draft Tide's own files (`state.sqlite` and its WAL, `projects/`, `runtime/`, `tmp/`, `git-home/`, `diagnostics/`) and one folder of Chromium's. The E2E checks that nothing else appears beside them.
+- **Instances.** One app instance runs per data store, as one Engine does: the lock lives in `userData`. A second app on the same store hands over to the first and quits.
+- **Other data stores.** `DRAFT_TIDE_DATA_DIR` now moves the app's profile too; the E2E no longer passes `--user-data-dir`.
+- **Older builds' files.** Builds before this one left Chromium's files directly in the data directory (`Local State`, `Preferences`, `Cookies`, `Local Storage/`, `Session Storage/`, `GPUCache/`, `Code Cache/` and the like; names from Chromium's profile layout, not a measured list). Nothing moves or deletes them, and the app no longer reads them. Only test machines have them (the alpha has not shipped). They can be deleted while the app is closed.
+
+What Draft Tide keeps on a Mac is the basis for the uninstall guide. It has not been checked on a clean machine:
+- **The app.** `/Applications/Draft Tide.app`.
+- **The data store.** `~/Library/Application Support/Draft Tide/`, with everything above.
+- **The login keychain.** `app.drafttide.github` (account: the data store's id) while signed in to GitHub; signing out removes it. Also Electron's `Draft Tide Safe Storage`, the cookie encryption key.
+- **macOS's own per-app files** may exist and have not been checked: `~/Library/Preferences/app.drafttide.desktop.plist` and `~/Library/Saved Application State/app.drafttide.desktop.savedState`.
+- **Each project's history** stays in its folder's `.git`. Removing the app never touches it.
+
+### Storage and diagnostics
+
+**容量 (`diagnostics.usage`).** It reports:
+- **The data directory by part.**
+  - `database`: `state.sqlite` and its WAL.
+  - `staging`: `projects/<id>/operations`, removed when operations end.
+  - `previews`: `projects/<id>/cache`.
+  - `logs`: `diagnostics/`.
+  - `desktop`: the app's profile.
+  - `other`: everything else.
+- **Free space** on the data directory's volume.
+- **Each project's history.** The size of its `.git` objects, and the free space on its volume (or "the same disk").
+
+Below 1 GB anywhere, the card says which steps free room: clear the preview cache, finish the operations that need recovery (their staging goes with them), or move other files away. It is a warning, never a quota. Nothing reads a design file or touches the network.
+
+**診斷資訊 (`diagnostics.report`).** The report is de-identified twice:
+- **By its schema.** The strict contract is the boundary for everything structured. Projects and operations are labels (`project-1`, `id-3`) that mean something only inside one report; the rest is states, error codes with their stable reasons, counts and sizes. No folder or file name, project name, GitHub account or repository, commit message, token or id leaves.
+- **By the redactor.** The one piece of free text, the last 192 KiB of `engine.log`, goes through `createRedactor` before it leaves the Engine. In order, it replaces:
+  - tokens (`ghu_`, `ghr_`, `ghp_`, `gho_`, `ghs_`, `github_pat_`);
+  - every path the Engine knows: project folders, folders agents asked to connect, the data, home and temporary directories, and the form each resolves to;
+  - email addresses;
+  - every name it knows: project names, requested names, GitHub accounts and repositories, the user's and the computer's names;
+  - UUIDs and object ids, as labels shared with the structured part;
+  - the 8-character project-id prefixes the log uses.
+
+Unprintable characters become U+FFFD. A property test checks that no private value passes, wherever it sits. Ids become labels rather than hashes: snapshot, operation and project ids are in commit metadata and `.drafttide.json`, which may be public on GitHub, and anyone holding the id could match its hash.
+
+The report holds:
+- **The app.** Its version, protocol and storage schema, the desktop identity mode, when the Engine started, and the runtime: Node, SQLite, platform, arch, OS release and Git's version.
+- **Settings.** Agent access, and the GitHub sign-in state without the user.
+- **Previews.** Whether they are available, the renderer, and the cache's entries and bytes.
+- **Storage.** The data directory's use.
+- **Each project.** Its folder state, its repo blockers' reasons, whether it needs recovery, whether it has versions, its history size and free space. When synced: the sync state, visibility, ahead and behind, the last error's code and reason, and push attempts.
+- **Operations.** The unfinished ones, with kind, state, origin, project label, times and error code, and the ended ones counted by kind, state and error code.
+- **The log tail.**
+
+A journal that can't be read becomes `readError` instead of a failed report.
+
+**The export.** The GUI asks Main, and Main shows the native save dialog (Downloads, `draft-tide-diagnostics-<UTC time>.json`). Main then calls `diagnostics.report` itself, checks the result against the schema again, and writes it (0600). The renderer never supplies the content or the path. The card then shows the saved file (顯示檔案位置 reveals it in Finder) and the report's contents, so the user sees exactly what they would send.
+
+### Opening the app for a request
+
+When the tool channel's request is recorded (`project.connectRequest`, `auth.loginRequest`, `remote.connectRequest`), core publishes `request.waiting` and calls `DesktopApp.attend()`:
+- **The app is open on this data store** (a verified desktop session): `shown`. Main brings the window forward at most every 3 s: it restores and shows the window, focuses it (taking focus), and bounces the Dock icon (or flashes the taskbar) where the system keeps another app in front. The request's banner is on every screen; nothing navigates away from what the user is doing.
+- **A release Engine with no session**: `opening`. It runs `/usr/bin/open -n -a <the app bundle it ships in>`, found from its own executable (`packagedLayout`), never named by the environment, an argument or the database. A data directory other than the default goes along as `--env DRAFT_TIDE_DATA_DIR=…`. The environment is built from scratch. `-n` starts an instance even if one runs: an app on another data store is another instance, and one on this store hands over and quits. For 30 s, further requests answer `opening` without starting it again.
+- **A development Engine** starts what `DRAFT_TIDE_APP` names: the desktop app passes its own Electron and Main, and the CLI forwards it. A release Engine refuses the variable (the allowlist).
+- **Otherwise** (a development Engine without the variable, another platform, a failed start): `unavailable`. The CLI then says "Open the Draft Tide app to answer it", as before.
+
+The request waits in the app in every case, and opening the app answers nothing. A request over the limit (20) opens nothing.
+
+### The icon
+
+`assets/icon.svg` puts the GUI's mark on Apple's icon grid: an 824 px rounded square with a 185 px radius in a 1024 px canvas, a shadow, tide-500 to tide-700. The two tide lines are the mark's own paths, scaled by 25.75. `scripts/make-icon.ts` renders the SVG with this repository's Electron, through Playwright at device scale 1. It renders each size from the vector, checks each PNG's dimensions, and writes `assets/icon.icns`: PNG entries `icp4` to `ic10`, 16 to 1024 px, 160 KiB. The `.icns` is committed; run the script after changing the SVG. The packager copies it to `Contents/Resources/electron.icns`, the file `Info.plist` names, and S8 checks it is this one.
+
+### Decisions taken here (part 2)
+
+- **Electron's profile is a subfolder of the data directory the window uses** (`desktop/`), not a separate place: removing the data directory removes everything, and the export can leave it out by construction.
+- **The report is for a person to send, from the app.** Storage use and the report are not offered to the tool channel (`tool: none`), and there is no `doctor` command. `status` and `recover inspect` give agents what they need. Draft Tide never sends a report.
+- **Main writes the file.** The renderer only asks, so a compromised page can't write chosen bytes to a chosen path through the bridge.
+- **A request brings the app forward but never navigates.** The banner is on every screen; jumping screens would interrupt a review or a restore in progress.
+- **`open -n -a` with the bundle the Engine is in.** LaunchServices starts the app the usual way (activation, Gatekeeper, App Translocation). `-n` plus the per-store single-instance lock gives one instance per data store.
+
+### Results (part 2, this container)
+
+- `corepack pnpm run check`, with Git 2.53.0 on `PATH`: format, lint, typecheck and build clean; **589 passed, 12 skipped**. Before part 2, the same container ran 569 passed and 12 skipped. The skips are macOS-only: the keychain, peer-identity and SEA tests.
+- **Desktop E2E under Xvfb, as root: 26 of 34 pass.** The 8 failures failed the same way before part 2. Five are previews: the sandboxed offscreen renderer doesn't render in this container. Three are the debugging-switch guard: Electron refuses to start as root without `--no-sandbox`, so the exit code isn't the guard's. Part 2's checks pass:
+  - the profile is in `desktop/`, with nothing else beside the Engine's files;
+  - the hidden window comes back when an agent asks (`details.app: shown`);
+  - the 容量 card;
+  - the diagnostics export: the saved file parses with the schema, and holds no folder, data directory, project name or id.
+- **The icon** was generated here (Electron 44.5.1 under Xvfb). Its ten PNGs were checked by eye and by size.
+- **Not run:** a release build with part 2, S8 on a signed app, `open -n -a` from the packaged Engine, the window and Dock on macOS, and the icon in Finder and the Dock.
+
 ## What is left in M1-09
 
 - **The rest of the GitHub round trip with the packaged app.** Sign-in, connecting and the first push passed (see Results); left: open the project from GitHub in another folder, save there, and pull that version back into the first folder.
-- **The diagnostics export, uninstall guide and usability gate**, and the clean-machine install (no Node, Git or developer tools, offline).
-- **The Engine opening the app** for a request (its location is now fixed).
-- **An app icon** (the build uses Electron's).
+- **A release run with part 2 on a Mac.** It covers:
+  - S8;
+  - a request from the packaged CLI with the app closed, open, and on another data store (`--env`);
+  - whether macOS 27 lets the window take focus (cooperative activation) or only bounces the Dock icon;
+  - the icon in Finder and the Dock, and whether macOS 26 and later frame a `.icns` icon;
+  - the diagnostics export from the packaged app.
+- **The uninstall guide, the usability gate and the clean-machine install** (no Node, Git or developer tools, offline). The list of what Draft Tide keeps (part 2) is the guide's basis.
 
 ## Known limits
 
 - **arm64 only.** The Git subset is pinned for macOS arm64; x64 and universal builds are unmeasured.
-- **Chromium's profile shares the data directory.** Electron's `userData` is `~/Library/Application Support/Draft Tide`, the default data store, even when `DRAFT_TIDE_DATA_DIR` points elsewhere (pre-existing in development builds). Chromium's files sit beside `state.sqlite`; nothing collides today, but the diagnostics export and uninstall guide must account for it, or `userData` should move to a subfolder.
 - **`hdiutil create` prints a deprecation warning** on macOS 27 (`diskutil image create` replaces it); it still works.
-- **Windows and Linux** have no release packaging (desktop identity unverified there).
+- **Windows and Linux** have no release packaging (desktop identity unverified there), and no release Engine opens an app there.
+- **The Engine log is never rotated.** The report carries its last 192 KiB; 容量 shows its size.
+- **Redaction replaces what the Engine knows.** A path it doesn't know passes through, unless it is under the home or temporary directory; an example is a file outside every project quoted in an error. The app shows the report before the user sends it. Short user and computer names are replaced wherever they appear (over-redaction).
+- **No Icon Composer icon.** A `.icon` for macOS 26's Liquid Glass needs Xcode's `actool` on a Mac; the packager accepts one beside the `.icns`.
