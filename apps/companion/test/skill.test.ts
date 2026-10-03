@@ -8,8 +8,10 @@ import { toolName } from '../src/mcp/server.ts';
 import { COMPANION } from './helpers.ts';
 
 const SKILL_DIR = join(COMPANION, '..', '..', 'skills', 'draft-tide');
-const skill = readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf8');
-const reference = readFileSync(join(SKILL_DIR, 'references', 'reference.md'), 'utf8');
+// A Windows checkout may carry CRLF; a host reads either.
+const text = (file: string) => readFileSync(join(SKILL_DIR, file), 'utf8').replace(/\r\n/g, '\n');
+const skill = text('SKILL.md');
+const reference = text(join('references', 'reference.md'));
 const TOOLS = OPERATION_NAMES.filter((op) => OPERATIONS[op].tool !== 'none').map(toolName);
 
 function backticked(text: string, pattern: RegExp): string[] {
