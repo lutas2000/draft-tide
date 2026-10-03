@@ -51,8 +51,9 @@ describe('the release configuration', () => {
 
 describe('signing the payload', () => {
   it('covers the executables of the packaged layout, with JIT only for the Preview Host, the Node and the Engine', () => {
+    // POSIX paths on every OS: the layout is the macOS one.
     const contents = '/A.app/Contents';
-    const layout = packagedLayout(join(contents, 'Resources'), 'darwin');
+    const layout = packagedLayout(`${contents}/Resources`, 'darwin');
     const ids = identifiers('app.example.desktop');
     const signing = payloadSigning(ids);
     const rel = (p: string) => relative(contents, p);
