@@ -4,13 +4,32 @@ import { DtError, Discovery, PROTOCOL_VERSION, type Channel } from '@draft-tide/
 import { EngineConnection } from './connection.ts';
 import { DATA_DIR_ENV, resolveDataDir, runtimePaths } from './paths.ts';
 
+// How to start the Engine. Release builds run the Engine executable itself (a
+// Node SEA that carries --disable-sigusr1 in its own configuration and takes
+// no Node options); development builds run the Engine script on the companion
+// Node (scriptEngineLaunch). Never Electron's Node or the user's PATH.
 export interface EngineLaunch {
-  // The bundled companion Node, never Electron's Node or the user's PATH.
-  nodePath: string;
-  engineEntry: string;
+  command: string;
+  args: string[];
   // Extra variables for the Engine (development knobs). The rest of the
   // environment is built from scratch.
   env?: Record<string, string>;
+}
+
+// The Engine script on the companion Node (development and tests).
+// --disable-sigusr1: otherwise any same-user process can open an inspector in
+// the Engine with SIGUSR1 (desktop-auth spike C1, E4). The minimal PATH is
+// where a development Engine looks for Git.
+export function scriptEngineLaunch(
+  nodePath: string,
+  engineEntry: string,
+  env: Record<string, string> = {},
+): EngineLaunch {
+  return {
+    command: nodePath,
+    args: ['--disable-sigusr1', engineEntry],
+    env: { ...(process.platform === 'win32' ? {} : { PATH: '/usr/bin:/bin' }), ...env },
+  };
 }
 
 export interface ConnectOptions {
@@ -91,25 +110,37 @@ async function tryConnect(dataDir: string, options: ConnectOptions): Promise<Eng
 }
 
 // Only these variables reach the Engine; nothing else from the caller's
-// environment does (no NODE_OPTIONS, GIT_*, proxies or tokens).
-function engineEnvironment(dataDir: string, extra: Record<string, string>): Record<string, string> {
+// environment does (no NODE_OPTIONS, GIT_*, proxies or tokens). On macOS they
+// are within the release Engine's allowlist, which refuses to start with
+// anything else (CLAUDE.md "Engine environment").
+export function engineEnvironment(
+  dataDir: string,
+  extra: Record<string, string>,
+  platform: NodeJS.Platform = process.platform,
+  from: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
   const env: Record<string, string> = { [DATA_DIR_ENV]: dataDir };
   const keep =
-    process.platform === 'win32'
+    platform === 'win32'
       ? ['SystemRoot', 'SYSTEMROOT', 'APPDATA', 'LOCALAPPDATA', 'USERPROFILE', 'TEMP', 'TMP']
-      : ['HOME', 'TMPDIR', 'XDG_RUNTIME_DIR', 'XDG_DATA_HOME'];
+      : [
+          'HOME',
+          'TMPDIR',
+          'USER',
+          'LOGNAME',
+          'LANG',
+          'LC_ALL',
+          ...(platform === 'linux' ? ['XDG_RUNTIME_DIR', 'XDG_DATA_HOME'] : []),
+        ];
   for (const k of keep) {
-    const v = process.env[k];
+    const v = from[k];
     if (v) env[k] = v;
   }
-  if (process.platform !== 'win32') env['PATH'] = '/usr/bin:/bin';
   return { ...env, ...extra };
 }
 
 function startEngine(dataDir: string, launch: EngineLaunch): void {
-  // --disable-sigusr1: otherwise any same-user process can open an inspector
-  // in the Engine with SIGUSR1 (desktop-auth spike C1, E4).
-  const child = spawn(launch.nodePath, ['--disable-sigusr1', launch.engineEntry], {
+  const child = spawn(launch.command, launch.args, {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,

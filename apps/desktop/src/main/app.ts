@@ -18,7 +18,7 @@ import {
   type IpcMainInvokeEvent,
 } from 'electron';
 import { DtError, OPERATIONS, errorEnvelope, isOperationName, isSingleLine } from '@draft-tide/contracts';
-import { defaultDataDir, resolveDataDir } from '@draft-tide/engine-client';
+import { defaultDataDir, packagedLayout, resolveDataDir } from '@draft-tide/engine-client';
 import { IPC, type AgentSetup, type ConnectionState } from '../shared/bridge.ts';
 import { BUILD } from './build-info.ts';
 import { DesktopEngine } from './engine.ts';
@@ -48,18 +48,18 @@ const isGuiUrl = (url: string) => url.startsWith(GUI_ROOT_URL);
 // M1-09). A data directory other than the default is passed as --data-dir, so
 // an agent reaches the same Engine as this window.
 function agentSetup(): AgentSetup {
-  const resources = () => process.resourcesPath;
-  const command = BUILD.companion
-    ? BUILD.companion.nodePath
-    : join(resources(), 'node', 'bin', process.platform === 'win32' ? 'node.exe' : 'node');
-  const cli = BUILD.companion ? BUILD.companion.cliEntry : join(resources(), 'companion', 'cli.mjs');
-  const skillDir = BUILD.companion ? BUILD.companion.skillDir : join(resources(), 'skills', 'draft-tide');
+  const where = BUILD.companion
+    ? { node: BUILD.companion.nodePath, cli: BUILD.companion.cliEntry, skillDir: BUILD.companion.skillDir }
+    : packagedLayout(process.resourcesPath);
   const dataDir = resolveDataDir();
   const custom = dataDir !== defaultDataDir();
+  // Every companion process runs with --disable-sigusr1 (CLAUDE.md "Every
+  // companion process").
+  const cli = ['--disable-sigusr1', where.cli];
   return {
-    command,
-    args: custom ? [cli, '--data-dir', dataDir] : [cli],
-    skillDir: existsSync(join(skillDir, 'SKILL.md')) ? skillDir : null,
+    command: where.node,
+    args: custom ? [...cli, '--data-dir', dataDir] : cli,
+    skillDir: existsSync(join(where.skillDir, 'SKILL.md')) ? where.skillDir : null,
     dataDir: custom ? dataDir : null,
   };
 }

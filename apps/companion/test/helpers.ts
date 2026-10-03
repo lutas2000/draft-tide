@@ -9,6 +9,7 @@ import {
   connectEngine,
   encodeFrame,
   runtimePaths,
+  scriptEngineLaunch,
   type EngineConnection,
 } from '@draft-tide/engine-client';
 import { findGitOnPath } from '@draft-tide/git-backend';
@@ -94,11 +95,11 @@ export function connectTo(
     channel,
     dataDir,
     client: { name: 'test', version: '0' },
-    launch: {
-      nodePath: process.execPath,
-      engineEntry: ENGINE_SOURCE,
-      env: { DRAFT_TIDE_ENGINE_IDLE_MS: String(idleMs), DRAFT_TIDE_GIT: GIT_FOR_ENGINE, ...extraEnv },
-    },
+    launch: scriptEngineLaunch(process.execPath, ENGINE_SOURCE, {
+      DRAFT_TIDE_ENGINE_IDLE_MS: String(idleMs),
+      DRAFT_TIDE_GIT: GIT_FOR_ENGINE,
+      ...extraEnv,
+    }),
   });
 }
 

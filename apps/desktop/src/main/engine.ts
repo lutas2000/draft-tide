@@ -1,4 +1,3 @@
-import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   PREVIEW_HOST_ENV,
@@ -9,7 +8,13 @@ import {
   type Envelope,
   type PreviewHostLaunch,
 } from '@draft-tide/contracts';
-import { connectEngine, type EngineConnection, type EngineLaunch } from '@draft-tide/engine-client';
+import {
+  connectEngine,
+  packagedLayout,
+  scriptEngineLaunch,
+  type EngineConnection,
+  type EngineLaunch,
+} from '@draft-tide/engine-client';
 import type { BridgeEvent, ConnectionState } from '../shared/bridge.ts';
 import { BUILD } from './build-info.ts';
 
@@ -31,22 +36,14 @@ function launch(): EngineLaunch {
     // (the E2E); release builds use only the bundled Git and github.com.
     const git = process.env['DRAFT_TIDE_GIT'];
     const testGitHub = process.env[TEST_GITHUB_ENV];
-    return {
-      nodePath: BUILD.companion.nodePath,
-      engineEntry: BUILD.companion.engineEntry,
-      env: {
-        ...(git ? { DRAFT_TIDE_GIT: git } : {}),
-        ...(testGitHub ? { [TEST_GITHUB_ENV]: testGitHub } : {}),
-        [PREVIEW_HOST_ENV]: JSON.stringify(previewHost()),
-      },
-    };
+    return scriptEngineLaunch(BUILD.companion.nodePath, BUILD.companion.engineEntry, {
+      ...(git ? { DRAFT_TIDE_GIT: git } : {}),
+      ...(testGitHub ? { [TEST_GITHUB_ENV]: testGitHub } : {}),
+      [PREVIEW_HOST_ENV]: JSON.stringify(previewHost()),
+    });
   }
-  // Packaged layout (M1-09): the bundled Node and the companion bundle sit in
-  // the app's resources, outside the asar.
-  return {
-    nodePath: join(process.resourcesPath, 'node', 'bin', process.platform === 'win32' ? 'node.exe' : 'node'),
-    engineEntry: join(process.resourcesPath, 'companion', 'engine.mjs'),
-  };
+  // Release: the Engine executable in the app's resources (packagedLayout).
+  return { command: packagedLayout(process.resourcesPath).engine, args: [] };
 }
 
 // Main's desktop-channel session with the Engine. Starts the Engine when
